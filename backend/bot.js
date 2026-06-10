@@ -118,21 +118,26 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
               const dialog = page.locator('div[role="dialog"]').first();
               const photoButton = dialog.locator('[aria-label="Photo/video" i]').first();
               
+              const clickPromise = photoButton.click().catch(() => {}); // prevent unhandled rejection if button is missing
               const [fileChooser] = await Promise.all([
                   page.waitForEvent('filechooser', { timeout: 10000 }),
-                  photoButton.click()
+                  clickPromise
               ]);
               await fileChooser.setFiles(imagePath);
               await delay(5000, 7000); // Wait for the image preview to load
           } catch (e) {
-              broadcast('log', { message: 'Button click failed. Trying direct input...', type: 'warning' });
-              const dialog = page.locator('div[role="dialog"]').first();
-              const fileInput = dialog.locator('input[type="file"]').first();
-              if (await fileInput.count() > 0) {
-                 await fileInput.setInputFiles(imagePath);
-                 await delay(5000, 7000);
-              } else {
-                 broadcast('log', { message: 'Could not find image upload button.', type: 'error' });
+              broadcast('log', { message: 'Standard upload failed. Trying direct input...', type: 'warning' });
+              try {
+                  const dialog = page.locator('div[role="dialog"]').first();
+                  const fileInput = dialog.locator('input[type="file"]').first();
+                  if (await fileInput.count() > 0) {
+                     await fileInput.setInputFiles(imagePath, { timeout: 10000 });
+                     await delay(5000, 7000);
+                  } else {
+                     broadcast('log', { message: 'No image upload button found. Proceeding with text only.', type: 'warning' });
+                  }
+              } catch (fallbackErr) {
+                  broadcast('log', { message: 'Image fallback failed. Proceeding with text only.', type: 'warning' });
               }
           }
         }
