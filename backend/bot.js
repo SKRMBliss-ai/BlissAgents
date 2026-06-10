@@ -157,30 +157,39 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
             }
         }
         
-        broadcast('log', { message: 'Post prepared. Waiting for manual approval...', type: 'warning' });
-        broadcast('state', 'waiting_approval');
-        
-        // Take screenshot of the prepared post
-        const screenshotName = await takeScreenshot(page, 'prepared');
-        broadcast('screenshot', screenshotName);
+        if (i < 2) {
+            broadcast('log', { message: `Post prepared. Waiting for manual approval (Group ${i + 1})...`, type: 'warning' });
+            broadcast('state', 'waiting_approval');
+            
+            // Take screenshot of the prepared post
+            const screenshotName = await takeScreenshot(page, 'prepared');
+            broadcast('screenshot', screenshotName);
 
-        // Wait for user to click "Approve"
-        manualApprovalPromise = new Promise((resolve) => {
-          manualApprovalResolve = resolve;
-        });
-        
-        const approved = await manualApprovalPromise;
-        manualApprovalPromise = null;
-        manualApprovalResolve = null;
+            // Wait for user to click "Approve"
+            manualApprovalPromise = new Promise((resolve) => {
+              manualApprovalResolve = resolve;
+            });
+            
+            const approved = await manualApprovalPromise;
+            manualApprovalPromise = null;
+            manualApprovalResolve = null;
 
-        if (!approved || shouldStop) {
-           broadcast('log', { message: 'Post skipped or bot stopped.', type: 'info' });
-           broadcast('state', 'running');
-           continue;
+            if (!approved || shouldStop) {
+               broadcast('log', { message: 'Post skipped or bot stopped.', type: 'info' });
+               broadcast('state', 'running');
+               continue;
+            }
+
+            broadcast('log', { message: 'Post approved! Submitting...', type: 'success' });
+            broadcast('state', 'running');
+        } else {
+            broadcast('log', { message: `Auto-approving post for Group ${i + 1}...`, type: 'info' });
+            await delay(3000, 5000); // Small pause to look human before clicking Post
+            if (shouldStop) {
+               broadcast('log', { message: 'Bot stopped.', type: 'info' });
+               break;
+            }
         }
-
-        broadcast('log', { message: 'Post approved! Submitting...', type: 'success' });
-        broadcast('state', 'running');
 
         // Click Post button
         const postButton = page.locator('div[aria-label="Post"][role="button"]').first();
