@@ -115,30 +115,35 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
         if (imagePath) {
           broadcast('log', { message: 'Uploading image...', type: 'info' });
           try {
-              const dialog = page.locator('div[role="dialog"]').first();
-              const photoButton = dialog.locator('[aria-label="Photo/video" i]').first();
+              // 1. Click the visible "Photo/video" button to expand the dropzone
+              const photoButton = page.locator('div[aria-label*="Photo/Video" i][role="button"]:visible, div[aria-label*="photo" i][role="button"]:visible').first();
               
-              const clickPromise = photoButton.click().catch(() => {}); // prevent unhandled rejection if button is missing
-              const [fileChooser] = await Promise.all([
-                  page.waitForEvent('filechooser', { timeout: 10000 }),
-                  clickPromise
-              ]);
-              await fileChooser.setFiles(imagePath);
-              await delay(5000, 7000); // Wait for the image preview to load
-          } catch (e) {
-              broadcast('log', { message: 'Standard upload failed. Trying direct input...', type: 'warning' });
-              try {
-                  const dialog = page.locator('div[role="dialog"]').first();
-                  const fileInput = dialog.locator('input[type="file"]').first();
-                  if (await fileInput.count() > 0) {
-                     await fileInput.setInputFiles(imagePath, { timeout: 10000 });
-                     await delay(5000, 7000);
-                  } else {
-                     broadcast('log', { message: 'No image upload button found. Proceeding with text only.', type: 'warning' });
-                  }
-              } catch (fallbackErr) {
-                  broadcast('log', { message: 'Image fallback failed. Proceeding with text only.', type: 'warning' });
+              if (await photoButton.count() > 0) {
+                  await photoButton.click();
+                  await delay(1500, 2500); // Wait for the drag-and-drop zone to render
               }
+
+              // 2. The hidden file input should now be attached to the DOM
+              // We use last() because Facebook leaves old file inputs in the DOM from previous groups
+              const fileInput = page.locator('input[type="file"][accept*="image"]').last();
+              
+              if (await fileInput.count() > 0) {
+                 await fileInput.setInputFiles(imagePath, { timeout: 10000 });
+                 await delay(5000, 7000); // Wait for image preview
+              } else {
+                 broadcast('log', { message: 'No file input found. Trying dropzone click...', type: 'warning' });
+                 
+                 // 3. Fallback: Try manually triggering the file chooser via the dropzone
+                 const dropzone = page.locator('div[aria-label*="Add photos" i]:visible, div:has-text("Add photos/videos"):visible').last();
+                 const [fileChooser] = await Promise.all([
+                     page.waitForEvent('filechooser', { timeout: 5000 }),
+                     dropzone.click()
+                 ]);
+                 await fileChooser.setFiles(imagePath);
+                 await delay(5000, 7000);
+              }
+          } catch (e) {
+              broadcast('log', { message: 'Image upload failed entirely. Proceeding with text only.', type: 'warning' });
           }
         }
 
