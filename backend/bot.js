@@ -114,36 +114,46 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
         // Upload image if provided
         if (imagePath) {
           broadcast('log', { message: 'Uploading image...', type: 'info' });
+          let imageUploaded = false;
           try {
-              // 1. Click the visible "Photo/video" button to expand the dropzone
+              // 1. Click the visible "Photo/video" button
               const photoButton = page.locator('div[aria-label*="Photo/Video" i][role="button"]:visible, div[aria-label*="photo" i][role="button"]:visible').first();
               
               if (await photoButton.count() > 0) {
-                  await photoButton.click();
-                  await delay(1500, 2500); // Wait for the drag-and-drop zone to render
+                  try {
+                      const [fileChooser] = await Promise.all([
+                          page.waitForEvent('filechooser', { timeout: 3000 }), // Wait 3s to see if it pops up native file picker
+                          photoButton.click()
+                      ]);
+                      await fileChooser.setFiles(imagePath);
+                      await delay(5000, 7000);
+                      imageUploaded = true;
+                  } catch (e) {
+                      // Timed out waiting for file chooser. The button likely just expanded the dropzone.
+                      await delay(1000, 2000); 
+                  }
               }
 
-              // 2. The hidden file input should now be attached to the DOM
-              // We use last() because Facebook leaves old file inputs in the DOM from previous groups
-              const fileInput = page.locator('input[type="file"][accept*="image"]').last();
-              
-              if (await fileInput.count() > 0) {
-                 await fileInput.setInputFiles(imagePath, { timeout: 10000 });
-                 await delay(5000, 7000); // Wait for image preview
-              } else {
-                 broadcast('log', { message: 'No file input found. Trying dropzone click...', type: 'warning' });
-                 
-                 // 3. Fallback: Try manually triggering the file chooser via the dropzone
-                 const dropzone = page.locator('div[aria-label*="Add photos" i]:visible, div:has-text("Add photos/videos"):visible').last();
-                 const [fileChooser] = await Promise.all([
-                     page.waitForEvent('filechooser', { timeout: 5000 }),
-                     dropzone.click()
-                 ]);
-                 await fileChooser.setFiles(imagePath);
-                 await delay(5000, 7000);
+              if (!imageUploaded) {
+                  // 2. The dropzone should now be visible inside the dialog
+                  const dialog = page.locator('div[role="dialog"]:visible').first();
+                  // A very robust selector for the Facebook dropzone box
+                  const dropzone = dialog.locator('div[role="button"]:has-text("Add photos/videos"), div[aria-label*="Add photos" i]').first();
+                  
+                  if (await dropzone.count() > 0) {
+                      const [fileChooser] = await Promise.all([
+                          page.waitForEvent('filechooser', { timeout: 8000 }),
+                          dropzone.click()
+                      ]);
+                      await fileChooser.setFiles(imagePath);
+                      await delay(5000, 7000);
+                      imageUploaded = true;
+                  } else {
+                      throw new Error("Dropzone element could not be located on the screen");
+                  }
               }
           } catch (e) {
-              broadcast('log', { message: 'Image upload failed entirely. Proceeding with text only.', type: 'warning' });
+              broadcast('log', { message: `Image upload failed entirely: ${e.message}`, type: 'warning' });
           }
         }
 
