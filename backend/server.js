@@ -67,7 +67,7 @@ app.post('/api/start', upload.single('image'), async (req, res) => {
     return res.status(400).json({ error: 'Bot is already running' });
   }
 
-  const { text, hashtags, groups } = req.body;
+  const { text, title, hashtags, groups } = req.body;
   const imagePath = req.file ? path.join(__dirname, req.file.path) : null;
   const groupList = JSON.parse(groups || '[]');
 
@@ -78,7 +78,7 @@ app.post('/api/start', upload.single('image'), async (req, res) => {
   currentStatus = { state: 'running', logs: [] };
   broadcast('state', 'running');
   
-  startBot({ text, hashtags, groups: groupList, imagePath, broadcast })
+  startBot({ text, title, hashtags, groups: groupList, imagePath, broadcast })
     .then(() => {
       broadcast('state', 'idle');
       currentStatus.state = 'idle';

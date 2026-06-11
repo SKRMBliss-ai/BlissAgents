@@ -8,10 +8,53 @@ const socket = io('http://localhost:3001');
 function FBAgent() {
   const [status, setStatus] = useState({ state: 'idle', logs: [] });
   const [text, setText] = useState('');
+  const [title, setTitle] = useState('');
   const [hashtags, setHashtags] = useState('');
-  const [groups, setGroups] = useState('');
+  const [groups, setGroups] = useState(`https://www.facebook.com/groups/822502437553383/
+https://www.facebook.com/groups/1951603422376327
+https://www.facebook.com/groups/1686106071892376
+https://www.facebook.com/groups/2716549981951800
+https://www.facebook.com/groups/EckhartTolleians
+https://www.facebook.com/groups/515589879556944
+https://www.facebook.com/groups/113913972042547/
+https://www.facebook.com/skrmbliss/
+https://www.facebook.com/groups/1434138693933877
+https://www.facebook.com/groups/270020646495756/
+https://www.facebook.com/groups/477873955911205/
+https://www.facebook.com/groups/553265302250277/
+https://www.facebook.com/groups/992260288565689/
+https://www.facebook.com/groups/1185142974948681/
+https://www.facebook.com/groups/815644013693086/
+https://www.facebook.com/groups/486881065165897/
+https://www.facebook.com/groups/270646983060345/
+https://www.facebook.com/groups/493465308588391/
+https://www.facebook.com/groups/247838265252370/
+https://www.facebook.com/groups/563049964374752/
+https://www.facebook.com/groups/137201078115641/
+https://www.facebook.com/groups/1189504006665062/
+https://www.facebook.com/groups/2446394515620820/
+https://www.facebook.com/groups/1692374491713588/
+https://www.facebook.com/groups/515051955909934/
+https://www.facebook.com/groups/426660259834622/
+https://www.facebook.com/groups/453405961660470/
+https://www.facebook.com/groups/937378784825967/
+https://www.facebook.com/groups/274301147706161/
+https://www.facebook.com/groups/manchestermindfulness/
+https://www.facebook.com/groups/thealchemisttribe/
+https://www.facebook.com/groups/1164487257958293/
+https://www.facebook.com/groups/691845166186433/
+https://www.facebook.com/groups/906852056665423/
+https://www.facebook.com/groups/1673816296316567/
+https://www.facebook.com/groups/243784577683/
+https://www.facebook.com/groups/245349380830741/
+https://www.facebook.com/groups/488494665607567/
+https://www.facebook.com/groups/335984007139243/
+https://www.facebook.com/groups/629555443733186/
+https://www.facebook.com/groups/yogacentre/
+https://www.facebook.com/groups/881782805675703/`);
   const [image, setImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [mediaType, setMediaType] = useState('image');
   const [screenshot, setScreenshot] = useState(null);
   const logsEndRef = useRef(null);
 
@@ -38,6 +81,7 @@ function FBAgent() {
       const file = e.target.files[0];
       setImage(file);
       setImagePreview(URL.createObjectURL(file));
+      setMediaType(file.type.startsWith('video/') ? 'video' : 'image');
     }
   };
 
@@ -48,6 +92,7 @@ function FBAgent() {
 
     const formData = new FormData();
     formData.append('text', text);
+    formData.append('title', title);
     formData.append('hashtags', hashtags);
     formData.append('groups', JSON.stringify(groupList));
     if (image) formData.append('image', image);
@@ -131,7 +176,18 @@ function FBAgent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">Hashtags</label>
+              <label className="block text-sm font-medium text-gray-400 mb-2">Video Title (Only used for Videos)</label>
+              <input 
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl p-4 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                placeholder="Enter a title for the video..."
+                value={title}
+                onChange={e => setTitle(e.target.value)}
+                disabled={status.state !== 'idle'}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-2">Hashtags / Video Tags</label>
               <input 
                 className="w-full bg-gray-900 border border-gray-700 rounded-xl p-4 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
                 placeholder="#awesome #product"
@@ -142,21 +198,25 @@ function FBAgent() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-400 mb-2">Image</label>
+              <label className="block text-sm font-medium text-gray-400 mb-2">Media (Image/Video)</label>
               <div className="border-2 border-dashed border-gray-600 rounded-xl p-6 flex flex-col items-center justify-center hover:border-indigo-400 transition-colors cursor-pointer relative overflow-hidden bg-gray-900">
                 <input 
                   type="file" 
-                  accept="image/*" 
+                  accept="image/*,video/*" 
                   onChange={handleImageChange}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   disabled={status.state !== 'idle'}
                 />
                 {imagePreview ? (
-                  <img src={imagePreview} alt="Preview" className="h-32 object-contain" />
+                  mediaType === 'video' ? (
+                    <video src={imagePreview} controls className="h-32 object-contain relative z-20" />
+                  ) : (
+                    <img src={imagePreview} alt="Preview" className="h-32 object-contain relative z-20" />
+                  )
                 ) : (
                   <div className="text-center">
                     <ImageIcon className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                    <span className="text-gray-400 text-sm">Click or drag image to upload</span>
+                    <span className="text-gray-400 text-sm">Click or drag image/video to upload</span>
                   </div>
                 )}
               </div>

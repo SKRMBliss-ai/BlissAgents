@@ -44,7 +44,7 @@ const takeScreenshot = async (page, name) => {
   return filename;
 };
 
-const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
+const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast }) => {
   isRunning = true;
   shouldStop = false;
 
@@ -78,7 +78,7 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
       broadcast('state', 'running');
     }
 
-    const fullText = `${text}\n\n${hashtags}`;
+    const fullText = title ? `${title}\n\n${text}\n\n${hashtags}` : `${text}\n\n${hashtags}`;
 
     for (let i = 0; i < groups.length; i++) {
       if (shouldStop) break;
@@ -104,6 +104,14 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
         
         if (await writeBox.count() > 0) {
             await writeBox.click();
+            await delay(1000, 2000);
+            
+            // Check if dialog opened, if not, try clicking again with force
+            let dialogCount = await page.locator('div[role="dialog"]:visible').count();
+            if (dialogCount === 0) {
+                await writeBox.click({ force: true });
+                await delay(2000, 3000);
+            }
         } else {
             broadcast('log', { message: 'Could not find the post input box. Skipping.', type: 'error' });
             continue;
@@ -115,30 +123,45 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
         if (imagePath) {
           broadcast('log', { message: 'Uploading image...', type: 'info' });
           let imageUploaded = false;
+          let dialog = page.locator('div[role="dialog"]:visible').first();
           try {
-              // 1. Click the visible "Photo/video" button
-              const photoButton = page.locator('div[aria-label*="Photo/Video" i][role="button"]:visible, div[aria-label*="photo" i][role="button"]:visible').first();
-              
-              if (await photoButton.count() > 0) {
-                  try {
-                      const [fileChooser] = await Promise.all([
-                          page.waitForEvent('filechooser', { timeout: 3000 }), // Wait 3s to see if it pops up native file picker
-                          photoButton.click()
-                      ]);
-                      await fileChooser.setFiles(imagePath);
-                      await delay(5000, 7000);
-                      imageUploaded = true;
-                  } catch (e) {
-                      // Timed out waiting for file chooser. The button likely just expanded the dropzone.
-                      await delay(1000, 2000); 
+              if (await dialog.count() === 0) {
+                  throw new Error("Create Post dialog did not open!");
+              }
+
+              // Strategy 1: Find the native file input directly inside the dialog
+              const fileInput = dialog.locator('input[type="file"]');
+              if (await fileInput.count() > 0) {
+                  broadcast('log', { message: 'Found hidden file input, injecting media...', type: 'info' });
+                  await fileInput.first().setInputFiles(imagePath);
+                  await delay(5000, 7000);
+                  imageUploaded = true;
+              }
+
+              if (!imageUploaded) {
+                  // Strategy 2: Click the visible "Photo/video" button inside the dialog
+                  const photoButton = dialog.locator('div[aria-label*="Photo" i][role="button"]:visible, div[role="button"]:has-text("Photo"):visible, div[role="button"]:has-text("Video"):visible').first();
+                  
+                  if (await photoButton.count() > 0) {
+                      try {
+                          const [fileChooser] = await Promise.all([
+                              page.waitForEvent('filechooser', { timeout: 3000 }), // Wait 3s to see if it pops up native file picker
+                              photoButton.click()
+                          ]);
+                          await fileChooser.setFiles(imagePath);
+                          await delay(5000, 7000);
+                          imageUploaded = true;
+                      } catch (e) {
+                          // Timed out waiting for file chooser. The button likely just expanded the dropzone.
+                          await delay(1000, 2000); 
+                      }
                   }
               }
 
               if (!imageUploaded) {
-                  // 2. The dropzone should now be visible inside the dialog
-                  const dialog = page.locator('div[role="dialog"]:visible').first();
+                  // Strategy 3: The dropzone should now be visible inside the dialog
                   // A very robust selector for the Facebook dropzone box
-                  const dropzone = dialog.locator('div[role="button"]:has-text("Add photos/videos"), div[aria-label*="Add photos" i]').first();
+                  const dropzone = dialog.locator('div[role="button"]:has-text("Add photos"), div[aria-label*="Add photos" i], div[role="button"]:has-text("Add video")').first();
                   
                   if (await dropzone.count() > 0) {
                       const [fileChooser] = await Promise.all([
@@ -155,6 +178,13 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
           } catch (e) {
               broadcast('log', { message: `Image upload failed entirely: ${e.message}`, type: 'warning' });
           }
+
+          // Strict validation: Do not post without the image
+          if (!imageUploaded) {
+              throw new Error("FATAL: Failed to upload image. Aborting post for this group to prevent text-only posting.");
+          }
+
+          // We removed the 'Edit' button click because Facebook Reels do not have Title/Tag fields in the Edit menu.
         }
 
         // Type text
@@ -177,38 +207,11 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
             }
         }
         
-        if (i < 2) {
-            broadcast('log', { message: `Post prepared. Waiting for manual approval (Group ${i + 1})...`, type: 'warning' });
-            broadcast('state', 'waiting_approval');
-            
-            // Take screenshot of the prepared post
-            const screenshotName = await takeScreenshot(page, 'prepared');
-            broadcast('screenshot', screenshotName);
-
-            // Wait for user to click "Approve"
-            manualApprovalPromise = new Promise((resolve) => {
-              manualApprovalResolve = resolve;
-            });
-            
-            const approved = await manualApprovalPromise;
-            manualApprovalPromise = null;
-            manualApprovalResolve = null;
-
-            if (!approved || shouldStop) {
-               broadcast('log', { message: 'Post skipped or bot stopped.', type: 'info' });
-               broadcast('state', 'running');
-               continue;
-            }
-
-            broadcast('log', { message: 'Post approved! Submitting...', type: 'success' });
-            broadcast('state', 'running');
-        } else {
-            broadcast('log', { message: `Auto-approving post for Group ${i + 1}...`, type: 'info' });
-            await delay(3000, 5000); // Small pause to look human before clicking Post
-            if (shouldStop) {
-               broadcast('log', { message: 'Bot stopped.', type: 'info' });
-               break;
-            }
+        broadcast('log', { message: `Auto-approving post for Group ${i + 1}...`, type: 'info' });
+        await delay(3000, 5000); // Small pause to look human before clicking Post
+        if (shouldStop) {
+            broadcast('log', { message: 'Bot stopped.', type: 'info' });
+            break;
         }
 
         // Click Post button
@@ -223,7 +226,7 @@ const startBot = async ({ text, hashtags, groups, imagePath, broadcast }) => {
         broadcast('log', { message: `Successfully posted to group ${i + 1}.`, type: 'success' });
 
         if (i < groups.length - 1) {
-           const waitTime = Math.floor(Math.random() * (120 - 60 + 1) + 60); // 60-120 seconds
+           const waitTime = Math.floor(Math.random() * (300 - 180 + 1) + 180); // 3 to 5 minutes
            broadcast('log', { message: `Waiting ${waitTime} seconds before next group...`, type: 'info' });
            await delay(waitTime * 1000, waitTime * 1000);
         }
