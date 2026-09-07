@@ -1,0 +1,7 @@
+{
+  "city": "Bangalore",
+  "businessTypes": ["Hotel/Homestay", "Restaurant/Café", "Coaching Institute", "Wellness Business"],
+  "countPerType": 3,
+  "dailyRunHour": 8,
+  "lastRunDate": null
+}

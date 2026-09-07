@@ -7,6 +7,8 @@ const path = require('path');
 const fs = require('fs');
 const { startBot, stopBot, approvePost } = require('./bot');
 const outreachAgent = require('./outreachAgent');
+const prospectFinder = require('./prospectFinder');
+const cron = require('node-cron');
 
 const app = express();
 const server = http.createServer(app);
@@ -97,6 +99,15 @@ app.post('/api/start', upload.single('image'), async (req, res) => {
 app.post('/api/approve', (req, res) => {
   approvePost();
   res.json({ message: 'Approved' });
+});
+
+app.get('/api/history', (req, res) => {
+  const LOG_FILE = path.join(__dirname, 'post_history.json');
+  if (fs.existsSync(LOG_FILE)) {
+      res.json(JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')));
+  } else {
+      res.json([]);
+  }
 });
 
 app.post('/api/stop', (req, res) => {
@@ -207,7 +218,7 @@ OUTPUT FORMAT:
 Return ONLY a strictly formatted JSON object with the following keys:
 {
   "titles": "A numbered list of 15 titles, each labeled with its formula (A-K). Also pick the 3 strongest titles for thumbnail testing and explain why. Suggest ONE anchor word from Tier 1 for a series.",
-  "description": "A highly conversational, human-like YouTube description (3-4 paragraphs) that introduces the topic with empathy, explains the value, and hooks the viewer to keep watching. Sound natural, not AI-generated.",
+  "description": "Follow this EXACT format:\nLine 1-3: A pipe-separated (|) list of keywords. Keep these main keywords: The Stillness Beneath Thought | Presence Meditation | witness consciousness | Michael Singer | Eckhart Tolle | Wisdom Untethered | Power of Now | presence | inner peace | stop overthinking | anxiety relief | mindfulness | Spiritual evolution | Overcoming guilt. Add a few extra relevant ones based on the topic.\nNext: A short paragraph summarizing the video.\nNext: A short paragraph describing the experience (e.g., designed to help you step out of compulsive thinking).\nNext: A 'Perfect for:' section with a bulleted list of 5-8 points highlighting who will benefit.",
   "hashtags": "A space-separated list of 10 highly relevant spiritual/mindfulness hashtags.",
   "tags": "A comma-separated list of 15 SEO-optimized tags for the YouTube video.",
   "thumbnail": "2-3 highly visual, engaging prompt ideas for creating a YouTube thumbnail (e.g. text overlay ideas, visual symbolism, contrast)."
@@ -309,6 +320,75 @@ app.post('/api/outreach/draft-message', async (req, res) => {
   } catch (error) {
     console.error('draft-message error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/outreach/settings', (req, res) => {
+  res.json(prospectFinder.loadSettings());
+});
+
+app.put('/api/outreach/settings', (req, res) => {
+  const settings = { ...prospectFinder.loadSettings(), ...req.body };
+  prospectFinder.saveSettings(settings);
+  res.json(settings);
+});
+
+const runDiscoveryAndSave = async () => {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  const settings = prospectFinder.loadSettings();
+  const existingProspects = outreachAgent.loadProspects();
+
+  const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings });
+
+  if (found.length > 0) {
+    const now = new Date().toISOString();
+    const withDefaults = found.map((p, i) => ({
+      id: (Date.now() + i).toString(),
+      digitalGaps: [],
+      recommendedService: '',
+      draftMessage: '',
+      status: 'New',
+      createdAt: now,
+      lastContactDate: null,
+      followUpDate: null,
+      ...p,
+    }));
+    outreachAgent.saveProspects([...withDefaults, ...existingProspects]);
+  }
+
+  prospectFinder.saveSettings({ ...settings, lastRunDate: new Date().toISOString().slice(0, 10) });
+  return found;
+};
+
+app.post('/api/outreach/find-prospects', async (req, res) => {
+  if (!process.env.GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: 'GOOGLE_PLACES_API_KEY is not set in backend/.env' });
+  }
+  try {
+    const { city, businessTypes, countPerType } = req.body;
+    const settings = { ...prospectFinder.loadSettings(), ...(city && { city }), ...(businessTypes && { businessTypes }), ...(countPerType && { countPerType }) };
+    prospectFinder.saveSettings(settings);
+    const found = await runDiscoveryAndSave();
+    res.json({ found });
+  } catch (error) {
+    console.error('find-prospects error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Auto-run once a day at the configured hour, but only while this server process is running.
+cron.schedule('0 * * * *', async () => {
+  const settings = prospectFinder.loadSettings();
+  const today = new Date().toISOString().slice(0, 10);
+  const currentHour = new Date().getHours();
+  if (settings.lastRunDate === today || currentHour !== settings.dailyRunHour) return;
+  if (!process.env.GOOGLE_PLACES_API_KEY) return;
+
+  try {
+    const found = await runDiscoveryAndSave();
+    console.log(`[daily discovery] Added ${found.length} new prospects.`);
+  } catch (error) {
+    console.error('[daily discovery] Failed:', error.message);
   }
 });
 

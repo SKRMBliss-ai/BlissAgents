@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
-  Send, Repeat, Mail, Phone,
+  Send, Repeat, Mail, Phone, Compass,
 } from 'lucide-react';
 
 const API = 'http://localhost:3001/api/outreach';
@@ -54,6 +54,10 @@ function OutreachAgent() {
   const [form, setForm] = useState(emptyForm);
   const [expandedId, setExpandedId] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [findingProspects, setFindingProspects] = useState(false);
+  const [findError, setFindError] = useState('');
+  const [findResultCount, setFindResultCount] = useState(null);
 
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
@@ -61,7 +65,49 @@ function OutreachAgent() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchProspects(); }, []);
+  const fetchSettings = async () => {
+    const res = await fetch(`${API}/settings`);
+    setSettings(await res.json());
+  };
+
+  useEffect(() => { fetchProspects(); fetchSettings(); }, []);
+
+  const saveSettings = async (patch) => {
+    const res = await fetch(`${API}/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    setSettings(await res.json());
+  };
+
+  const handleFindProspects = async () => {
+    setFindingProspects(true);
+    setFindError('');
+    setFindResultCount(null);
+    try {
+      const res = await fetch(`${API}/find-prospects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setFindResultCount(data.found.length);
+      await fetchProspects();
+    } catch (e) {
+      setFindError(e.message);
+    } finally {
+      setFindingProspects(false);
+    }
+  };
+
+  const toggleBusinessType = (type) => {
+    const current = settings.businessTypes || [];
+    const next = current.includes(type) ? current.filter(t => t !== type) : [...current, type];
+    setSettings(s => ({ ...s, businessTypes: next }));
+    saveSettings({ businessTypes: next });
+  };
 
   const updateProspect = async (id, patch) => {
     const res = await fetch(`${API}/prospects/${id}`, {
@@ -188,6 +234,77 @@ function OutreachAgent() {
         <StatCard icon={<Repeat className="w-5 h-5 text-orange-400" />} value={stats.followedUp} label="Followed Up" />
         <StatCard icon={<Mail className="w-5 h-5 text-gray-500" />} value="—" label="Emails Opened (not tracked yet)" />
       </div>
+
+      {/* Prospect Discovery */}
+      {settings && (
+        <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center space-x-2">
+              <Compass className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-lg font-semibold text-white">Find Today's Prospects</h2>
+            </div>
+            <p className="text-xs text-gray-500">
+              Auto-runs daily at {settings.dailyRunHour}:00 while the backend server is running.
+              {settings.lastRunDate && ` Last run: ${settings.lastRunDate}.`}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">City</label>
+              <input
+                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-40"
+                value={settings.city}
+                onChange={e => setSettings(s => ({ ...s, city: e.target.value }))}
+                onBlur={() => saveSettings({ city: settings.city })}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Per category</label>
+              <input
+                type="number" min={1} max={10}
+                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-20"
+                value={settings.countPerType}
+                onChange={e => setSettings(s => ({ ...s, countPerType: Number(e.target.value) }))}
+                onBlur={() => saveSettings({ countPerType: settings.countPerType })}
+              />
+            </div>
+            <button
+              onClick={handleFindProspects}
+              disabled={findingProspects}
+              className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 px-5 rounded-lg transition-all"
+            >
+              {findingProspects ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
+              <span>Find Prospects Now</span>
+            </button>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-2">Business types to search</label>
+            <div className="flex flex-wrap gap-2">
+              {BUSINESS_TYPES.filter(t => t !== 'Other').map(type => (
+                <button
+                  key={type}
+                  onClick={() => toggleBusinessType(type)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                    settings.businessTypes?.includes(type)
+                      ? 'bg-emerald-900/40 border-emerald-600 text-emerald-300'
+                      : 'bg-gray-900 border-gray-700 text-gray-400'
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+          {findError && (
+            <div className="text-sm text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg p-3">{findError}</div>
+          )}
+          {findResultCount !== null && !findError && (
+            <div className="text-sm text-emerald-400 bg-emerald-900/20 border border-emerald-800/50 rounded-lg p-3">
+              Added {findResultCount} new prospect{findResultCount === 1 ? '' : 's'}.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Daily Digest */}
       <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
