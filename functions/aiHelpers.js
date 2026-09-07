@@ -70,6 +70,7 @@ Likely digital gaps noticed: ${(digitalGaps || []).join(', ') || 'general online
 Service to lead with: ${recommendedService || 'digital presence improvements'}
 
 Follow this exact structure and tone (based on a real template the sender uses):
+0. Salutation: if a real contact person name was given above (not "the owner"), open with "Hi [FirstName]," using just their first name. Otherwise open with "Hi there," — never "Dear Owner of [Business]" or any other mail-merge-sounding salutation.
 1. Open by naming the business and something genuinely positive/specific about it (infer something plausible from the business type — do not invent fake stats or claims).
 2. A short "I'm Shruti from Bangalore, with 20+ years of experience..." intro paragraph, adapted naturally to this recipient.
 3. A bullet list of the sender's services (from the persona above) — trim it to 3-5 bullets most relevant to this business's gaps, don't always list all six.

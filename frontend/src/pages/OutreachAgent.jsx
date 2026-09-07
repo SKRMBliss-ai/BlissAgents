@@ -69,6 +69,30 @@ const detectLinkType = (url) => {
   return 'Website';
 };
 
+// Cheap-builder / free-subdomain platforms are a real signal of a dated or
+// never-upgraded site (factual from the URL itself, no need to crawl it).
+const DATED_PLATFORM_HINTS = [
+  'wixsite.com', 'weebly.com', 'blogspot.com', 'godaddysites.com', 'jimdo.com',
+  'sites.google.com', '.wordpress.com', 'webs.com', 'yolasite.com',
+];
+
+const OUTREACH_CATEGORIES = {
+  no_website: { label: 'No Website', color: 'bg-red-900/40 border-red-600 text-red-300', rank: 0 },
+  outdated_website: { label: 'Outdated Website', color: 'bg-orange-900/40 border-orange-600 text-orange-300', rank: 1 },
+  established_website: { label: 'Established Website', color: 'bg-gray-800 border-gray-600 text-gray-400', rank: 3 },
+  social_only: { label: 'Social Presence Only', color: 'bg-purple-900/40 border-purple-600 text-purple-300', rank: 2 },
+  needs_manual_contact: { label: 'Individual (Freelancer)', color: 'bg-indigo-900/40 border-indigo-600 text-indigo-300', rank: 4 },
+};
+
+const deriveCategory = (p) => {
+  if (p.needsManualContact) return 'needs_manual_contact';
+  if (!p.website) return 'no_website';
+  const linkType = detectLinkType(p.website);
+  if (linkType !== 'Website') return 'social_only';
+  const isDated = DATED_PLATFORM_HINTS.some(hint => p.website.toLowerCase().includes(hint)) || p.website.toLowerCase().startsWith('http://');
+  return isDated ? 'outdated_website' : 'established_website';
+};
+
 const googleSearchLink = (businessName, notes) => {
   const location = (notes || '').split('·')[0]?.trim() || '';
   return `https://www.google.com/search?q=${encodeURIComponent(`${businessName} ${location}`.trim())}`;
@@ -87,6 +111,7 @@ function OutreachAgent() {
   const [findResultCount, setFindResultCount] = useState(null);
   const [sortBy, setSortBy] = useState('createdAt');
   const [sortDir, setSortDir] = useState('desc');
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [freelancerTypes, setFreelancerTypes] = useState([]);
   const [selectedFreelancerTypes, setSelectedFreelancerTypes] = useState([]);
   const [freelancerCities, setFreelancerCities] = useState([]);
@@ -306,6 +331,15 @@ function OutreachAgent() {
 
   const handleUnapproveEmail = (p) => updateProspect(p.id, { emailApproved: false });
 
+  const handleMarkWhatsAppSent = (p) => updateProspect(p.id, {
+    whatsappSentAt: new Date().toISOString(),
+    status: p.status === 'New' ? 'Contacted' : p.status,
+    lastContactDate: todayStr(),
+    followUpDate: addDays(todayStr(), 3),
+  });
+
+  const handleUnmarkWhatsAppSent = (p) => updateProspect(p.id, { whatsappSentAt: null });
+
   const markContacted = (p) => updateProspect(p.id, {
     status: 'Contacted', lastContactDate: todayStr(), followUpDate: addDays(todayStr(), 3),
   });
@@ -338,8 +372,29 @@ function OutreachAgent() {
     return { total, reachedOut, followedUp, emailsOpened, queuedForSend };
   }, [prospects]);
 
+  const categoryCounts = useMemo(() => {
+    const counts = {};
+    for (const p of prospects) {
+      const cat = deriveCategory(p);
+      counts[cat] = (counts[cat] || 0) + 1;
+    }
+    return counts;
+  }, [prospects]);
+
   const sortedProspects = useMemo(() => {
-    const sorted = [...prospects].sort((a, b) => {
+    const filtered = categoryFilter === 'all' ? prospects : prospects.filter(p => deriveCategory(p) === categoryFilter);
+    const sorted = [...filtered].sort((a, b) => {
+      // Prospects with an email address always float to the top — they're
+      // ready to reach out to right now, regardless of whatever else is sorted.
+      const aHasEmail = a.email ? 1 : 0;
+      const bHasEmail = b.email ? 1 : 0;
+      if (aHasEmail !== bHasEmail) return bHasEmail - aHasEmail;
+
+      if (sortBy === 'category') {
+        const ar = OUTREACH_CATEGORIES[deriveCategory(a)].rank;
+        const br = OUTREACH_CATEGORIES[deriveCategory(b)].rank;
+        return sortDir === 'asc' ? ar - br : br - ar;
+      }
       const av = a[sortBy] || '';
       const bv = b[sortBy] || '';
       if (av < bv) return sortDir === 'asc' ? -1 : 1;
@@ -347,7 +402,7 @@ function OutreachAgent() {
       return 0;
     });
     return sorted;
-  }, [prospects, sortBy, sortDir]);
+  }, [prospects, sortBy, sortDir, categoryFilter]);
 
   const toggleSort = (field) => {
     if (sortBy === field) {
@@ -607,9 +662,28 @@ function OutreachAgent() {
 
       {/* Prospect List */}
       <div className="bg-gray-800 rounded-2xl shadow-xl border border-gray-700 overflow-hidden">
-        <div className="p-6 border-b border-gray-700 flex items-center space-x-2">
-          <Users className="w-5 h-5 text-emerald-400" />
-          <h2 className="text-lg font-semibold text-white">Prospect Pipeline ({prospects.length})</h2>
+        <div className="p-6 border-b border-gray-700 space-y-3">
+          <div className="flex items-center space-x-2">
+            <Users className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-lg font-semibold text-white">Prospect Pipeline ({sortedProspects.length}{categoryFilter !== 'all' ? ` of ${prospects.length}` : ''})</h2>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setCategoryFilter('all')}
+              className={`text-xs px-3 py-1.5 rounded-full border transition-all ${categoryFilter === 'all' ? 'bg-emerald-900/40 border-emerald-600 text-emerald-300' : 'bg-gray-900 border-gray-700 text-gray-400'}`}
+            >
+              All ({prospects.length})
+            </button>
+            {Object.entries(OUTREACH_CATEGORIES).sort((a, b) => a[1].rank - b[1].rank).map(([key, cat]) => (
+              <button
+                key={key}
+                onClick={() => setCategoryFilter(key)}
+                className={`text-xs px-3 py-1.5 rounded-full border transition-all ${categoryFilter === key ? cat.color : 'bg-gray-900 border-gray-700 text-gray-400'}`}
+              >
+                {cat.label} ({categoryCounts[key] || 0})
+              </button>
+            ))}
+          </div>
         </div>
         {loading ? (
           <div className="p-10 text-center text-gray-500">Loading...</div>
@@ -617,11 +691,12 @@ function OutreachAgent() {
           <div className="p-10 text-center text-gray-500">No prospects yet. Click "Add Prospect" to start.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
+            <table className="min-w-[900px] w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-700 text-left text-gray-400">
                   <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <SortableTh field="businessType" label="Type" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <SortableTh field="category" label="Category" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <SortableTh field="status" label="Status" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <th className="px-4 py-3 font-medium">Contact</th>
                   <th className="px-4 py-3 font-medium">Email</th>
@@ -645,6 +720,8 @@ function OutreachAgent() {
                     onSendEmail={() => handleSendEmail(p)}
                     onApproveEmail={() => handleApproveEmail(p)}
                     onUnapproveEmail={() => handleUnapproveEmail(p)}
+                    onMarkWhatsAppSent={() => handleMarkWhatsAppSent(p)}
+                    onUnmarkWhatsAppSent={() => handleUnmarkWhatsAppSent(p)}
                     onMarkContacted={() => markContacted(p)}
                     onSetStatus={(s) => setStatus(p, s)}
                     onDelete={() => deleteProspect(p.id)}
@@ -763,7 +840,7 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
+function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkWhatsAppSent, onUnmarkWhatsAppSent, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
   return (
     <>
       <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
@@ -774,6 +851,11 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
           </div>
         </td>
         <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.businessType}</td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${OUTREACH_CATEGORIES[deriveCategory(p)].color}`}>
+            {OUTREACH_CATEGORIES[deriveCategory(p)].label}
+          </span>
+        </td>
         <td className="px-4 py-3">
           <span className={`px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
         </td>
@@ -787,14 +869,17 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
         </td>
         <td className="px-4 py-3 whitespace-nowrap">
           {p.whatsapp ? (
-            <a
-              href={whatsappLink(p.whatsapp, p.draftMessage)}
-              target="_blank" rel="noopener noreferrer"
-              onClick={e => e.stopPropagation()}
-              className="text-green-400 hover:text-green-300 underline"
-            >
-              {p.whatsapp}
-            </a>
+            <span className="inline-flex items-center gap-1.5">
+              {p.whatsappSentAt && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
+              <a
+                href={whatsappLink(p.whatsapp, p.draftMessage)}
+                target="_blank" rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-green-400 hover:text-green-300 underline"
+              >
+                {p.whatsapp}
+              </a>
+            </span>
           ) : <span className="text-gray-500">—</span>}
         </td>
         <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.lastContactDate || '—'}</td>
@@ -808,7 +893,7 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
       <AnimatePresence>
         {expanded && (
           <tr>
-            <td colSpan={9} className="p-0 border-b border-gray-700">
+            <td colSpan={10} className="p-0 border-b border-gray-700">
               <motion.div
                 initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
                 className="overflow-hidden"
@@ -899,6 +984,25 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                         <Phone className="w-4 h-4" />
                         <span>Open in WhatsApp</span>
                       </a>
+                    )}
+                    {p.whatsapp && (
+                      p.whatsappSentAt ? (
+                        <button
+                          onClick={onUnmarkWhatsAppSent}
+                          className="flex items-center space-x-2 bg-green-900/40 hover:bg-green-900/60 border border-green-700/50 text-green-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>WhatsApp Sent {new Date(p.whatsappSentAt).toLocaleDateString()}</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={onMarkWhatsAppSent}
+                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Mark WhatsApp Sent</span>
+                        </button>
+                      )
                     )}
                     {p.status === 'New' && (
                       <button onClick={onMarkContacted} className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all">
