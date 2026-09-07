@@ -690,8 +690,20 @@ function OutreachAgent() {
         ) : prospects.length === 0 ? (
           <div className="p-10 text-center text-gray-500">No prospects yet. Click "Add Prospect" to start.</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-[900px] w-full text-sm">
+          <div>
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[19%]" />
+                <col className="w-[9%]" />
+                <col className="w-[11%]" />
+                <col className="w-[8%]" />
+                <col className="w-[9%]" />
+                <col className="w-[12%]" />
+                <col className="w-[12%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[4%]" />
+              </colgroup>
               <thead>
                 <tr className="border-b border-gray-700 text-left text-gray-400">
                   <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
@@ -844,47 +856,47 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
   return (
     <>
       <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
-        <td className="px-4 py-3">
-          <div className="flex items-center space-x-2 min-w-0">
-            {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />}
-            <span className="font-medium text-white truncate">{p.businessName}</span>
+        <td className="px-4 py-3 align-top">
+          <div className="flex items-start space-x-2 min-w-0">
+            {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />}
+            <span className="font-medium text-white break-words">{p.businessName}</span>
           </div>
         </td>
-        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.businessType}</td>
-        <td className="px-4 py-3 whitespace-nowrap">
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${OUTREACH_CATEGORIES[deriveCategory(p)].color}`}>
+        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.businessType}</td>
+        <td className="px-4 py-3 align-top">
+          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${OUTREACH_CATEGORIES[deriveCategory(p)].color}`}>
             {OUTREACH_CATEGORIES[deriveCategory(p)].label}
           </span>
         </td>
-        <td className="px-4 py-3">
-          <span className={`px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
+        <td className="px-4 py-3 align-top">
+          <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
         </td>
-        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.contactPerson || '—'}</td>
-        <td className="px-4 py-3 text-gray-400 truncate max-w-[160px]">
+        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.contactPerson || '—'}</td>
+        <td className="px-4 py-3 text-gray-400 break-all align-top">
           {p.email ? p.email : p.needsManualContact ? (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-900/40 border border-orange-700/50 text-orange-300 whitespace-nowrap">
+            <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-900/40 border border-orange-700/50 text-orange-300">
               Needs contact info
             </span>
           ) : '—'}
         </td>
-        <td className="px-4 py-3 whitespace-nowrap">
+        <td className="px-4 py-3 align-top">
           {p.whatsapp ? (
-            <span className="inline-flex items-center gap-1.5">
-              {p.whatsappSentAt && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
+            <span className="inline-flex items-start gap-1.5">
+              {p.whatsappSentAt && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0 mt-0.5" />}
               <a
                 href={whatsappLink(p.whatsapp, p.draftMessage)}
                 target="_blank" rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}
-                className="text-green-400 hover:text-green-300 underline"
+                className="text-green-400 hover:text-green-300 underline break-words"
               >
                 {p.whatsapp}
               </a>
             </span>
           ) : <span className="text-gray-500">—</span>}
         </td>
-        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.lastContactDate || '—'}</td>
-        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.followUpDate || '—'}</td>
-        <td className="px-4 py-3">
+        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.lastContactDate || '—'}</td>
+        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.followUpDate || '—'}</td>
+        <td className="px-4 py-3 align-top">
           <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-gray-500 hover:text-red-400">
             <Trash2 className="w-4 h-4" />
           </button>
