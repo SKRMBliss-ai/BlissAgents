@@ -1,0 +1,17 @@
+{
+  "name": "functions",
+  "description": "BlissAgents Outreach Agent - Firebase Functions backend",
+  "engines": { "node": "20" },
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.6.1",
+    "firebase-functions": "^7.0.5",
+    "openai": "^6.42.0"
+  }
+}

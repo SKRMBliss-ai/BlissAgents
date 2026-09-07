@@ -6,7 +6,7 @@ import {
   Send, Repeat, Mail, Phone, Compass,
 } from 'lucide-react';
 
-const API = 'http://localhost:3001/api/outreach';
+const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/outreach';
 
 const STATUSES = ['New', 'Contacted', 'No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'];
 const BUSINESS_TYPES = [
@@ -244,7 +244,7 @@ function OutreachAgent() {
               <h2 className="text-lg font-semibold text-white">Find Today's Prospects</h2>
             </div>
             <p className="text-xs text-gray-500">
-              Auto-runs daily at {settings.dailyRunHour}:00 while the backend server is running.
+              Auto-runs daily at {settings.dailyRunHour}:00 IST via Cloud Scheduler.
               {settings.lastRunDate && ` Last run: ${settings.lastRunDate}.`}
             </p>
           </div>
