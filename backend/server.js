@@ -348,7 +348,10 @@ app.post('/api/outreach/send-email', async (req, res) => {
     if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
     if (!prospect.email) return res.status(400).json({ error: 'Prospect has no email address' });
 
-    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI' });
+    // Points at the deployed function even for locally-sent emails, since a
+    // recipient's mail client can't reach localhost to load the pixel.
+    const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospectId}`;
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
 
     const today = new Date().toISOString().slice(0, 10);
     const followUpDate = new Date();
@@ -366,6 +369,21 @@ app.post('/api/outreach/send-email', async (req, res) => {
     console.error('send-email error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/outreach/track-open/:id', (req, res) => {
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const prospect = prospects.find(p => p.id === req.params.id);
+    if (prospect && !prospect.emailOpenedAt) {
+      prospect.emailOpenedAt = new Date().toISOString();
+      outreachAgent.saveProspects(prospects);
+    }
+  } catch (error) {
+    console.error('track-open error:', error.message);
+  }
+  res.set('Content-Type', 'image/gif');
+  res.send(emailSender.TRACKING_PIXEL_GIF);
 });
 
 app.get('/api/outreach/settings', (req, res) => {

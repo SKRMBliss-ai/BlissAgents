@@ -40,18 +40,25 @@ const getTransporter = () => nodemailer.createTransport({
   },
 });
 
-const sendEmail = async ({ to, subject, body, fromName }) => {
+const sendEmail = async ({ to, subject, body, fromName, trackingUrl }) => {
   const transporter = getTransporter();
   await transporter.verify();
 
   const fromAddress = (process.env.EMAIL_USER || '').trim();
+  const html = trackingUrl ? markdownToHtml(body) + trackingPixelTag(trackingUrl) : markdownToHtml(body);
   await transporter.sendMail({
     from: fromName ? `"${fromName}" <${fromAddress}>` : fromAddress,
     to,
     subject,
-    html: markdownToHtml(body),
+    html,
     text: body,
   });
 };
 
-module.exports = { sendEmail, markdownToHtml };
+// 1x1 transparent GIF, served by the open-tracking endpoint.
+const TRACKING_PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+
+const trackingPixelTag = (trackingUrl) =>
+  `<img src="${trackingUrl}" width="1" height="1" style="display:none" alt="" />`;
+
+module.exports = { sendEmail, markdownToHtml, TRACKING_PIXEL_GIF, trackingPixelTag };

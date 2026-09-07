@@ -250,7 +250,8 @@ function OutreachAgent() {
     const followedUp = prospects.filter(p =>
       ['No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'].includes(p.status)
     ).length;
-    return { total, reachedOut, followedUp };
+    const emailsOpened = prospects.filter(p => p.emailOpenedAt).length;
+    return { total, reachedOut, followedUp, emailsOpened };
   }, [prospects]);
 
   const sortedProspects = useMemo(() => {
@@ -296,7 +297,7 @@ function OutreachAgent() {
         <StatCard icon={<Users className="w-5 h-5 text-gray-400" />} value={stats.total} label="Prospects" />
         <StatCard icon={<Send className="w-5 h-5 text-blue-400" />} value={stats.reachedOut} label="Reached Out" />
         <StatCard icon={<Repeat className="w-5 h-5 text-orange-400" />} value={stats.followedUp} label="Followed Up" />
-        <StatCard icon={<Mail className="w-5 h-5 text-gray-500" />} value="—" label="Emails Opened (not tracked yet)" />
+        <StatCard icon={<Mail className="w-5 h-5 text-purple-400" />} value={stats.emailsOpened} label="Emails Opened" />
       </div>
 
       {/* Prospect Discovery */}
@@ -601,6 +602,7 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <InfoLine label="Website" value={p.website} />
                     <InfoLine label="Instagram" value={p.instagram} />
+                    <InfoLine label="Email Opened" value={p.emailOpenedAt ? new Date(p.emailOpenedAt).toLocaleString() : null} />
                   </div>
 
                   <div className="flex flex-wrap gap-2">

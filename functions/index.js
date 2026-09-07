@@ -86,7 +86,8 @@ app.post('/api/outreach/send-email', async (req, res) => {
     if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
     if (!prospect.email) return res.status(400).json({ error: 'Prospect has no email address' });
 
-    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI' });
+    const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospectId}`;
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
 
     const today = new Date().toISOString().slice(0, 10);
     const followUpDate = new Date();
@@ -103,6 +104,19 @@ app.post('/api/outreach/send-email', async (req, res) => {
     console.error('send-email error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/outreach/track-open/:id', async (req, res) => {
+  try {
+    const prospect = await store.getProspect(req.params.id);
+    if (prospect && !prospect.emailOpenedAt) {
+      await store.updateProspect(req.params.id, { emailOpenedAt: new Date().toISOString() });
+    }
+  } catch (error) {
+    console.error('track-open error:', error.message);
+  }
+  res.set('Content-Type', 'image/gif');
+  res.send(emailSender.TRACKING_PIXEL_GIF);
 });
 
 app.get('/api/outreach/settings', async (req, res) => {
