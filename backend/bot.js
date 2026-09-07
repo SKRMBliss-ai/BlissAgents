@@ -48,6 +48,9 @@ const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast })
   isRunning = true;
   shouldStop = false;
 
+  const successfulGroups = [];
+  const failedGroups = [];
+
   try {
     let page;
     try {
@@ -216,7 +219,7 @@ const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast })
 
         // Click Post button
         const postButton = page.locator('div[aria-label="Post"][role="button"]').first();
-        await postButton.click();
+        await postButton.click({ force: true });
 
         // Wait for post to finish
         await delay(5000, 8000);
@@ -224,6 +227,7 @@ const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast })
         const resultScreenshot = await takeScreenshot(page, 'success');
         broadcast('screenshot', resultScreenshot);
         broadcast('log', { message: `Successfully posted to group ${i + 1}.`, type: 'success' });
+        successfulGroups.push(groupUrl);
 
         if (i < groups.length - 1) {
            const waitTime = Math.floor(Math.random() * (300 - 180 + 1) + 180); // 3 to 5 minutes
@@ -233,11 +237,33 @@ const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast })
 
       } catch (err) {
         broadcast('log', { message: `Error posting to group ${i+1}: ${err.message}`, type: 'error' });
+        broadcast('failed_group', groupUrl);
+        failedGroups.push(groupUrl);
       }
     }
 
     await page.close();
     broadcast('log', { message: 'All groups processed.', type: 'success' });
+
+    // Save to history
+    const LOG_FILE = path.join(__dirname, 'post_history.json');
+    let history = [];
+    if (fs.existsSync(LOG_FILE)) {
+        try {
+            history = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
+        } catch (e) {}
+    }
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    history = history.filter(run => new Date(run.timestamp) > fortyEightHoursAgo);
+    
+    history.unshift({
+        timestamp: new Date().toISOString(),
+        text: title ? `${title} - ${text.substring(0, 30)}...` : text.substring(0, 50) + '...',
+        totalAttempted: groups.length,
+        successfulGroups,
+        failedGroups
+    });
+    fs.writeFileSync(LOG_FILE, JSON.stringify(history, null, 2));
 
   } catch (err) {
     throw err;

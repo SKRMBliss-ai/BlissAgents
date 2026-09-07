@@ -10,6 +10,9 @@ function FBAgent() {
   const [text, setText] = useState('');
   const [title, setTitle] = useState('');
   const [hashtags, setHashtags] = useState('');
+  const [failedGroups, setFailedGroups] = useState([]);
+  const [historyData, setHistoryData] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [groups, setGroups] = useState(`https://www.facebook.com/groups/822502437553383/
 https://www.facebook.com/groups/1951603422376327
 https://www.facebook.com/groups/1686106071892376
@@ -63,12 +66,14 @@ https://www.facebook.com/groups/881782805675703/`);
     socket.on('state', (state) => setStatus(prev => ({ ...prev, state })));
     socket.on('log', (log) => setStatus(prev => ({ ...prev, logs: [...prev.logs, log] })));
     socket.on('screenshot', (filename) => setScreenshot(`http://localhost:3001/screenshots/${filename}`));
+    socket.on('failed_group', (url) => setFailedGroups(prev => [...prev, url]));
 
     return () => {
       socket.off('status');
       socket.off('state');
       socket.off('log');
       socket.off('screenshot');
+      socket.off('failed_group');
     };
   }, []);
 
@@ -90,6 +95,8 @@ https://www.facebook.com/groups/881782805675703/`);
     if (groupList.length === 0) return alert('Please add at least one group URL.');
     if (!text) return alert('Please add some text for the post.');
 
+    setFailedGroups([]); // Clear previous failures
+
     const formData = new FormData();
     formData.append('text', text);
     formData.append('title', title);
@@ -105,6 +112,18 @@ https://www.facebook.com/groups/881782805675703/`);
       setScreenshot(null);
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch('http://localhost:3001/api/history');
+      const data = await res.json();
+      setHistoryData(data);
+      setShowHistory(true);
+    } catch (err) {
+      console.error(err);
+      alert('Could not load history.');
     }
   };
 
@@ -242,6 +261,27 @@ https://www.facebook.com/groups/881782805675703/`);
                 </button>
               )}
             </div>
+
+            {status.state === 'idle' && failedGroups.length > 0 && (
+              <motion.button
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                onClick={() => {
+                  setGroups(failedGroups.join('\n'));
+                  setFailedGroups([]);
+                }}
+                className="w-full flex items-center justify-center space-x-2 bg-yellow-600 hover:bg-yellow-500 text-white py-4 rounded-xl font-bold text-lg shadow-lg shadow-yellow-600/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <span>Retry {failedGroups.length} Failed Group{failedGroups.length > 1 ? 's' : ''}</span>
+              </motion.button>
+            )}
+
+            <button
+              onClick={fetchHistory}
+              className="w-full flex items-center justify-center space-x-2 bg-gray-800 hover:bg-gray-700 text-gray-300 py-3 rounded-xl font-bold transition-all border border-gray-700 mt-4"
+            >
+              <span>View History (Last 48 hours)</span>
+            </button>
           </div>
         </div>
 
@@ -320,6 +360,60 @@ https://www.facebook.com/groups/881782805675703/`);
 
         </div>
       </div>
+
+      {/* History Modal */}
+      <AnimatePresence>
+        {showHistory && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-4xl max-h-[80vh] flex flex-col shadow-2xl"
+            >
+              <div className="flex justify-between items-center p-6 border-b border-gray-800">
+                <h2 className="text-2xl font-bold text-white">Bot Run History (Last 48 Hours)</h2>
+                <button onClick={() => setShowHistory(false)} className="text-gray-400 hover:text-white">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto flex-1">
+                {historyData.length === 0 ? (
+                  <p className="text-gray-400 text-center py-8">No runs found in the last 48 hours.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {historyData.map((run, i) => (
+                      <div key={i} className="bg-gray-800/50 p-4 rounded-xl border border-gray-700/50">
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="text-sm text-gray-400">{new Date(run.timestamp).toLocaleString()}</div>
+                          <div className="text-sm font-medium space-x-3">
+                            <span className="text-green-400">{run.successfulGroups.length} Success</span>
+                            <span className={run.failedGroups.length > 0 ? "text-red-400" : "text-gray-500"}>{run.failedGroups.length} Failed</span>
+                          </div>
+                        </div>
+                        <p className="text-white text-sm mb-3">"{run.text}"</p>
+                        {run.failedGroups.length > 0 && (
+                          <div className="bg-red-900/20 border border-red-900/50 rounded-lg p-3">
+                            <h4 className="text-red-400 text-xs font-bold mb-1 uppercase tracking-wider">Failed Groups:</h4>
+                            <ul className="list-disc list-inside text-xs text-red-300/80">
+                              {run.failedGroups.map((g, j) => <li key={j} className="truncate">{g}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
