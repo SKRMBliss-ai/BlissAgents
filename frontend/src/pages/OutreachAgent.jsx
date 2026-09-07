@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
+  Send, Repeat, Mail, Phone,
 } from 'lucide-react';
 
 const API = 'http://localhost:3001/api/outreach';
@@ -37,6 +38,13 @@ const statusColor = {
 const emptyForm = {
   businessName: '', businessType: BUSINESS_TYPES[0], website: '', instagram: '',
   contactPerson: '', email: '', whatsapp: '', notes: '',
+};
+
+const whatsappLink = (whatsapp, message) => {
+  const digits = (whatsapp || '').replace(/[^\d+]/g, '');
+  if (!digits) return null;
+  const text = message ? `?text=${encodeURIComponent(message)}` : '';
+  return `https://wa.me/${digits.replace(/^\+/, '')}${text}`;
 };
 
 function OutreachAgent() {
@@ -146,6 +154,15 @@ function OutreachAgent() {
     return { dueFollowUps, interested, newToday };
   }, [prospects]);
 
+  const stats = useMemo(() => {
+    const total = prospects.length;
+    const reachedOut = prospects.filter(p => p.status !== 'New').length;
+    const followedUp = prospects.filter(p =>
+      ['No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'].includes(p.status)
+    ).length;
+    return { total, reachedOut, followedUp };
+  }, [prospects]);
+
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
       <header className="flex justify-between items-center bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-700">
@@ -163,6 +180,14 @@ function OutreachAgent() {
           <span>Add Prospect</span>
         </button>
       </header>
+
+      {/* Stats Overview */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard icon={<Users className="w-5 h-5 text-gray-400" />} value={stats.total} label="Prospects" />
+        <StatCard icon={<Send className="w-5 h-5 text-blue-400" />} value={stats.reachedOut} label="Reached Out" />
+        <StatCard icon={<Repeat className="w-5 h-5 text-orange-400" />} value={stats.followedUp} label="Followed Up" />
+        <StatCard icon={<Mail className="w-5 h-5 text-gray-500" />} value="—" label="Emails Opened (not tracked yet)" />
+      </div>
 
       {/* Daily Digest */}
       <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
@@ -278,6 +303,18 @@ function OutreachAgent() {
   );
 }
 
+function StatCard({ icon, value, label }) {
+  return (
+    <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700 flex items-center space-x-4">
+      <div className="bg-gray-900 w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="text-2xl font-bold text-white">{value}</div>
+        <div className="text-xs text-gray-500 truncate">{label}</div>
+      </div>
+    </div>
+  );
+}
+
 function DigestCard({ icon, label, color, children }) {
   return (
     <div className={`rounded-xl border p-4 space-y-2 ${color}`}>
@@ -335,7 +372,19 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                 <InfoLine label="Instagram" value={p.instagram} />
                 <InfoLine label="Contact" value={p.contactPerson} />
                 <InfoLine label="Email" value={p.email} />
-                <InfoLine label="WhatsApp" value={p.whatsapp} />
+                <div>
+                  <span className="text-gray-500">WhatsApp: </span>
+                  {p.whatsapp ? (
+                    <a
+                      href={whatsappLink(p.whatsapp, p.draftMessage)}
+                      target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="text-green-400 hover:text-green-300 underline"
+                    >
+                      {p.whatsapp}
+                    </a>
+                  ) : <span className="text-gray-300">—</span>}
+                </div>
                 <InfoLine label="Last Contact" value={p.lastContactDate} />
               </div>
 
@@ -356,6 +405,16 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                   {busyId === p.id + '-msg' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
                   <span>Draft Message</span>
                 </button>
+                {p.whatsapp && p.draftMessage && (
+                  <a
+                    href={whatsappLink(p.whatsapp, p.draftMessage)}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                  >
+                    <Phone className="w-4 h-4" />
+                    <span>Open in WhatsApp</span>
+                  </a>
+                )}
                 {p.status === 'New' && (
                   <button onClick={onMarkContacted} className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all">
                     Mark Contacted
