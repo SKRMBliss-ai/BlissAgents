@@ -112,6 +112,7 @@ function OutreachAgent() {
   const [sortBy, setSortBy] = useState('createdAt');
   const [sortDir, setSortDir] = useState('desc');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [freelancerTypes, setFreelancerTypes] = useState([]);
   const [selectedFreelancerTypes, setSelectedFreelancerTypes] = useState([]);
   const [freelancerCities, setFreelancerCities] = useState([]);
@@ -292,7 +293,7 @@ function OutreachAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           businessName: p.businessName, businessType: p.businessType, contactPerson: p.contactPerson,
-          digitalGaps: p.digitalGaps, recommendedService: p.recommendedService,
+          digitalGaps: p.digitalGaps, recommendedService: p.recommendedService, notes: p.notes,
         }),
       });
       const data = await res.json();
@@ -331,6 +332,18 @@ function OutreachAgent() {
 
   const handleUnapproveEmail = (p) => updateProspect(p.id, { emailApproved: false });
 
+  // For when you write/send the email yourself outside the app entirely (e.g.
+  // AI drafting is rate-limited, or you just prefer to) — logs it the same way
+  // an in-app send would, and stops the daily queue from also sending it.
+  const handleMarkEmailSentManually = (p) => updateProspect(p.id, {
+    emailSentAt: new Date().toISOString(),
+    status: p.status === 'New' ? 'Contacted' : p.status,
+    lastContactDate: todayStr(),
+    followUpDate: addDays(todayStr(), 3),
+  });
+
+  const handleUnmarkEmailSent = (p) => updateProspect(p.id, { emailSentAt: null });
+
   const handleMarkWhatsAppSent = (p) => updateProspect(p.id, {
     whatsappSentAt: new Date().toISOString(),
     status: p.status === 'New' ? 'Contacted' : p.status,
@@ -339,6 +352,88 @@ function OutreachAgent() {
   });
 
   const handleUnmarkWhatsAppSent = (p) => updateProspect(p.id, { whatsappSentAt: null });
+
+  const handleMarkWhatsAppInvalid = (p) => updateProspect(p.id, { whatsappInvalid: true });
+  const handleUnmarkWhatsAppInvalid = (p) => updateProspect(p.id, { whatsappInvalid: false });
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const eligibleForWhatsAppSend = (p) => p.whatsapp && p.draftMessage && !p.whatsappInvalid;
+
+  const toggleSelectAllVisible = () => {
+    const eligible = sortedProspects.filter(eligibleForWhatsAppSend);
+    const allSelected = eligible.length > 0 && eligible.every(p => selectedIds.has(p.id));
+    setSelectedIds(allSelected ? new Set() : new Set(eligible.map(p => p.id)));
+  };
+
+  const [draftingMissing, setDraftingMissing] = useState(false);
+  const missingDraftCount = prospects.filter(p => !p.draftEmailBody).length;
+
+  const handleDraftMissing = async () => {
+    setDraftingMissing(true);
+    try {
+      const res = await fetch(`${API}/draft-missing`, { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not draft missing emails: ' + e.message);
+    } finally {
+      setDraftingMissing(false);
+    }
+  };
+
+  const [scrapingEmails, setScrapingEmails] = useState(false);
+  const [scrapeResult, setScrapeResult] = useState(null);
+  const missingEmailWithWebsiteCount = prospects.filter(p => p.website && !p.email).length;
+
+  const handleScrapeMissingEmails = async () => {
+    setScrapingEmails(true);
+    setScrapeResult(null);
+    try {
+      const res = await fetch(`${API}/scrape-missing-emails`, { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setScrapeResult(data);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not scrape emails: ' + e.message);
+    } finally {
+      setScrapingEmails(false);
+    }
+  };
+
+  const handleScrapeOneEmail = async (p) => {
+    setBusyId(p.id + '-scrape');
+    try {
+      const res = await fetch(`${API}/scrape-email/${p.id}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (!data.found) alert('No email found on their website.');
+      setProspects(prev => prev.map(x => (x.id === p.id ? data.prospect : x)));
+    } catch (e) {
+      alert('Could not scrape email: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Opens each selected prospect's WhatsApp chat with the draft message
+  // pre-filled in the compose box — you still click Send yourself in each tab.
+  // Never sends anything automatically.
+  const handleBulkSendWhatsApp = () => {
+    const targets = prospects.filter(p => selectedIds.has(p.id) && eligibleForWhatsAppSend(p));
+    if (targets.length === 0) return;
+    if (!confirm(`Open WhatsApp for ${targets.length} selected prospect${targets.length === 1 ? '' : 's'}? You'll still need to click Send in each one.`)) return;
+    targets.forEach(p => window.open(whatsappLink(p.whatsapp, p.draftMessage), '_blank'));
+    setSelectedIds(new Set());
+  };
 
   const markContacted = (p) => updateProspect(p.id, {
     status: 'Contacted', lastContactDate: todayStr(), followUpDate: addDays(todayStr(), 3),
@@ -383,12 +478,20 @@ function OutreachAgent() {
 
   const sortedProspects = useMemo(() => {
     const filtered = categoryFilter === 'all' ? prospects : prospects.filter(p => deriveCategory(p) === categoryFilter);
+    // Contact tier: 0 = has email (reach out now), 1 = has some other contact
+    // path (WhatsApp or website — worth a manual look), 2 = totally unreachable
+    // (no email/WhatsApp/website at all) — not worth spending time on, so these
+    // sink to the bottom regardless of whatever else is sorted.
+    const contactTier = (p) => {
+      if (p.email) return 0;
+      if ((p.whatsapp && !p.whatsappInvalid) || p.website) return 1;
+      return 2;
+    };
+
     const sorted = [...filtered].sort((a, b) => {
-      // Prospects with an email address always float to the top — they're
-      // ready to reach out to right now, regardless of whatever else is sorted.
-      const aHasEmail = a.email ? 1 : 0;
-      const bHasEmail = b.email ? 1 : 0;
-      if (aHasEmail !== bHasEmail) return bHasEmail - aHasEmail;
+      const at = contactTier(a);
+      const bt = contactTier(b);
+      if (at !== bt) return at - bt;
 
       if (sortBy === 'category') {
         const ar = OUTREACH_CATEGORIES[deriveCategory(a)].rank;
@@ -439,6 +542,41 @@ function OutreachAgent() {
         <StatCard icon={<Mail className="w-5 h-5 text-purple-400" />} value={stats.emailsOpened} label="Emails Opened" />
         <StatCard icon={<CheckCircle2 className="w-5 h-5 text-indigo-400" />} value={stats.queuedForSend} label="Queued to Send" />
       </div>
+
+      {missingDraftCount > 0 && (
+        <div className="bg-gray-800 rounded-2xl p-4 shadow-xl border border-gray-700 flex items-center justify-between flex-wrap gap-3">
+          <span className="text-sm text-gray-300">{missingDraftCount} prospect{missingDraftCount === 1 ? '' : 's'} added before auto-drafting — still missing an email draft.</span>
+          <button
+            onClick={handleDraftMissing}
+            disabled={draftingMissing}
+            className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
+          >
+            {draftingMissing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+            <span>Draft All Missing ({missingDraftCount})</span>
+          </button>
+        </div>
+      )}
+
+      {missingEmailWithWebsiteCount > 0 && (
+        <div className="bg-gray-800 rounded-2xl p-4 shadow-xl border border-gray-700 space-y-2">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <span className="text-sm text-gray-300">
+              {missingEmailWithWebsiteCount} prospect{missingEmailWithWebsiteCount === 1 ? '' : 's'} have a website but no email on file — worth checking their site for a contact address.
+            </span>
+            <button
+              onClick={handleScrapeMissingEmails}
+              disabled={scrapingEmails}
+              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
+            >
+              {scrapingEmails ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+              <span>Find Emails from Websites ({missingEmailWithWebsiteCount})</span>
+            </button>
+          </div>
+          {scrapeResult && (
+            <p className="text-xs text-blue-300">Checked {scrapeResult.scanned} website{scrapeResult.scanned === 1 ? '' : 's'}, found {scrapeResult.found} email{scrapeResult.found === 1 ? '' : 's'}.</p>
+          )}
+        </div>
+      )}
 
       {/* Email Queue Settings */}
       {settings && (
@@ -684,6 +822,19 @@ function OutreachAgent() {
               </button>
             ))}
           </div>
+          {selectedIds.size > 0 && (
+            <div className="flex items-center gap-3 bg-green-900/20 border border-green-800/50 rounded-lg p-3">
+              <span className="text-sm text-green-300">{selectedIds.size} selected</span>
+              <button
+                onClick={handleBulkSendWhatsApp}
+                className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-all"
+              >
+                <Phone className="w-3.5 h-3.5" />
+                <span>Open WhatsApp for {selectedIds.size} Selected</span>
+              </button>
+              <button onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-400 hover:text-white">Clear</button>
+            </div>
+          )}
         </div>
         {loading ? (
           <div className="p-10 text-center text-gray-500">Loading...</div>
@@ -693,19 +844,29 @@ function OutreachAgent() {
           <div>
             <table className="w-full table-fixed text-sm">
               <colgroup>
-                <col className="w-[19%]" />
-                <col className="w-[9%]" />
+                <col className="w-[4%]" />
+                <col className="w-[17%]" />
+                <col className="w-[8%]" />
+                <col className="w-[10%]" />
+                <col className="w-[7%]" />
+                <col className="w-[8%]" />
                 <col className="w-[11%]" />
-                <col className="w-[8%]" />
-                <col className="w-[9%]" />
-                <col className="w-[12%]" />
-                <col className="w-[12%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
+                <col className="w-[11%]" />
+                <col className="w-[7%]" />
+                <col className="w-[7%]" />
                 <col className="w-[4%]" />
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-700 text-left text-gray-400">
+                  <th className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      className="cursor-pointer"
+                      checked={sortedProspects.filter(eligibleForWhatsAppSend).length > 0 && sortedProspects.filter(eligibleForWhatsAppSend).every(p => selectedIds.has(p.id))}
+                      onChange={toggleSelectAllVisible}
+                      title="Select all with a WhatsApp draft ready"
+                    />
+                  </th>
                   <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <SortableTh field="businessType" label="Type" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                   <SortableTh field="category" label="Category" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
@@ -723,6 +884,9 @@ function OutreachAgent() {
                   <ProspectRow
                     key={p.id}
                     p={p}
+                    selected={selectedIds.has(p.id)}
+                    onToggleSelect={() => toggleSelect(p.id)}
+                    selectable={eligibleForWhatsAppSend(p)}
                     expanded={expandedId === p.id}
                     onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
                     busyId={busyId}
@@ -732,8 +896,13 @@ function OutreachAgent() {
                     onSendEmail={() => handleSendEmail(p)}
                     onApproveEmail={() => handleApproveEmail(p)}
                     onUnapproveEmail={() => handleUnapproveEmail(p)}
+                    onMarkEmailSentManually={() => handleMarkEmailSentManually(p)}
+                    onUnmarkEmailSent={() => handleUnmarkEmailSent(p)}
                     onMarkWhatsAppSent={() => handleMarkWhatsAppSent(p)}
                     onUnmarkWhatsAppSent={() => handleUnmarkWhatsAppSent(p)}
+                    onMarkWhatsAppInvalid={() => handleMarkWhatsAppInvalid(p)}
+                    onUnmarkWhatsAppInvalid={() => handleUnmarkWhatsAppInvalid(p)}
+                    onScrapeEmail={() => handleScrapeOneEmail(p)}
                     onMarkContacted={() => markContacted(p)}
                     onSetStatus={(s) => setStatus(p, s)}
                     onDelete={() => deleteProspect(p.id)}
@@ -852,10 +1021,15 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkWhatsAppSent, onUnmarkWhatsAppSent, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
+function ProspectRow({ p, selected, onToggleSelect, selectable, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkEmailSentManually, onUnmarkEmailSent, onMarkWhatsAppSent, onUnmarkWhatsAppSent, onMarkWhatsAppInvalid, onUnmarkWhatsAppInvalid, onScrapeEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
   return (
     <>
       <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
+        <td className="px-4 py-3 align-top" onClick={e => e.stopPropagation()}>
+          {selectable && (
+            <input type="checkbox" className="cursor-pointer" checked={selected} onChange={onToggleSelect} />
+          )}
+        </td>
         <td className="px-4 py-3 align-top">
           <div className="flex items-start space-x-2 min-w-0">
             {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />}
@@ -905,7 +1079,7 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
       <AnimatePresence>
         {expanded && (
           <tr>
-            <td colSpan={10} className="p-0 border-b border-gray-700">
+            <td colSpan={11} className="p-0 border-b border-gray-700">
               <motion.div
                 initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
                 className="overflow-hidden"
@@ -943,12 +1117,24 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                     <InfoLine label="Instagram" value={p.instagram} />
                     <div onClick={e => e.stopPropagation()}>
                       <label className="block text-xs text-gray-500 mb-1">Email</label>
-                      <input
-                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
-                        value={p.email || ''}
-                        placeholder="paste email here"
-                        onChange={e => onFieldChange('email', e.target.value)}
-                      />
+                      <div className="flex gap-2">
+                        <input
+                          className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
+                          value={p.email || ''}
+                          placeholder="paste email here"
+                          onChange={e => onFieldChange('email', e.target.value)}
+                        />
+                        {p.website && !p.email && (
+                          <button
+                            onClick={onScrapeEmail}
+                            disabled={busyId === p.id + '-scrape'}
+                            className="flex-shrink-0 bg-blue-900/40 hover:bg-blue-900/60 border border-blue-700/50 disabled:opacity-50 text-blue-300 text-xs font-medium px-3 rounded-lg transition-all"
+                            title="Check their website for a contact email"
+                          >
+                            {busyId === p.id + '-scrape' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Find from site'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div onClick={e => e.stopPropagation()}>
                       <label className="block text-xs text-gray-500 mb-1">WhatsApp</label>
@@ -987,6 +1173,25 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                       {busyId === p.id + '-email' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
                       <span>Draft Email</span>
                     </button>
+                    {p.email && (
+                      p.emailSentAt ? (
+                        <button
+                          onClick={onUnmarkEmailSent}
+                          className="flex items-center space-x-2 bg-green-900/40 hover:bg-green-900/60 border border-green-700/50 text-green-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Email Sent {new Date(p.emailSentAt).toLocaleDateString()}</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={onMarkEmailSentManually}
+                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium py-2 px-3 rounded-lg transition-all"
+                          title="Use this if you wrote and sent the email yourself outside the app"
+                        >
+                          <span>Mark Email Sent Manually</span>
+                        </button>
+                      )
+                    )}
                     {p.whatsapp && p.draftMessage && (
                       <a
                         href={whatsappLink(p.whatsapp, p.draftMessage)}
@@ -1013,6 +1218,25 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                         >
                           <CheckCircle2 className="w-4 h-4" />
                           <span>Mark WhatsApp Sent</span>
+                        </button>
+                      )
+                    )}
+                    {p.whatsapp && (
+                      p.whatsappInvalid ? (
+                        <button
+                          onClick={onUnmarkWhatsAppInvalid}
+                          className="flex items-center space-x-2 bg-red-900/40 hover:bg-red-900/60 border border-red-700/50 text-red-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                        >
+                          <X className="w-4 h-4" />
+                          <span>Not on WhatsApp</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={onMarkWhatsAppInvalid}
+                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium py-2 px-3 rounded-lg transition-all"
+                          title="Click if you tried opening WhatsApp and got 'number isn't on WhatsApp'"
+                        >
+                          <span>Mark Not on WhatsApp</span>
                         </button>
                       )
                     )}

@@ -32,7 +32,26 @@ const updateProspect = async (id, patch) => {
   return doc.exists ? { id: doc.id, ...doc.data() } : null;
 };
 
+// When a prospect is deleted, its placeId/sourceUrl (whichever it has) goes
+// into a permanent exclusion list so future discovery runs never re-add the
+// same business — deleting is meant to mean "don't show me this again".
+const excludeIdentifier = async (value) => {
+  if (!value) return;
+  const docId = Buffer.from(value).toString('base64').replace(/[/+=]/g, '_').slice(0, 500);
+  await db().collection('excludedIdentifiers').doc(docId).set({ value, excludedAt: new Date().toISOString() });
+};
+
+const loadExcludedIdentifiers = async () => {
+  const snap = await db().collection('excludedIdentifiers').get();
+  return new Set(snap.docs.map(doc => doc.data().value));
+};
+
 const deleteProspect = async (id) => {
+  const prospect = await getProspect(id);
+  if (prospect) {
+    await excludeIdentifier(prospect.placeId);
+    await excludeIdentifier(prospect.sourceUrl);
+  }
   await db().collection('prospects').doc(id).delete();
 };
 
@@ -80,5 +99,5 @@ const saveSettings = async (settings) => {
 
 module.exports = {
   loadProspects, getProspect, createProspect, updateProspect, deleteProspect,
-  bulkAddProspects, loadSettings, saveSettings,
+  bulkAddProspects, loadSettings, saveSettings, loadExcludedIdentifiers,
 };

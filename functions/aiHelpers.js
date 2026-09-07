@@ -33,6 +33,7 @@ Likely digital gaps noticed: ${(digitalGaps || []).join(', ') || 'general online
 Service to softly lead with: ${recommendedService || 'digital presence improvements'}
 
 Rules:
+- Salutation: if a real contact person name was given above (not "the owner"), open with "Hi [FirstName]," using just their first name. Otherwise skip a name-based greeting entirely and open straight with the business name/positive observation — never write a placeholder like "Hi [Owner's Name]," or "Hi [Name],", and never address a generic "Hi there," followed immediately by naming them again.
 - Sound human, specific, and low-pressure — never generic or ad-like.
 - Open by naming the business and something genuinely positive about it.
 - Mention 1-2 of the specific gaps naturally, not as a bulleted list.

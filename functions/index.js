@@ -12,6 +12,7 @@ const prospectFinder = require('./prospectFinder');
 const freelancerFinder = require('./freelancerFinder');
 const aiHelpers = require('./aiHelpers');
 const emailSender = require('./emailSender');
+const emailScraper = require('./emailScraper');
 
 const API_SECRETS = [
   'GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS',
@@ -33,13 +34,18 @@ const enrichProspect = async (openai, prospect) => {
     const gaps = await aiHelpers.suggestGaps(openai, {
       businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
     });
-    const email = await aiHelpers.draftEmail(openai, {
+    const draftArgs = {
       businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
-    });
+    };
+    const [email, whatsappMessage] = await Promise.all([
+      aiHelpers.draftEmail(openai, draftArgs),
+      aiHelpers.draftMessage(openai, draftArgs),
+    ]);
     return {
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
       draftEmailSubject: email.subject, draftEmailBody: email.body,
+      draftMessage: whatsappMessage,
     };
   } catch (error) {
     console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
@@ -165,6 +171,68 @@ app.get('/api/outreach/track-open/:id', async (req, res) => {
   res.send(emailSender.TRACKING_PIXEL_GIF);
 });
 
+// Catches up any prospect added before auto-drafting existed (or where it
+// failed) — drafts gaps + email for everyone currently missing a draft.
+app.post('/api/outreach/draft-missing', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  try {
+    const prospects = await store.loadProspects();
+    const missing = prospects.filter(p => !p.draftEmailBody);
+    const enriched = await enrichProspectsConcurrently(getOpenAI(), missing);
+    for (const p of enriched) {
+      const { id, ...patch } = p;
+      await store.updateProspect(id, patch);
+    }
+    res.json({ updated: enriched.length });
+  } catch (error) {
+    console.error('draft-missing error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/scrape-email/:id', async (req, res) => {
+  try {
+    const prospect = await store.getProspect(req.params.id);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+    if (!prospect.website) return res.status(400).json({ error: 'Prospect has no website to scrape' });
+    const email = await emailScraper.scrapeEmailFromWebsite(prospect.website);
+    if (!email) return res.json({ found: false, prospect });
+    const updated = await store.updateProspect(req.params.id, { email });
+    res.json({ found: true, prospect: updated });
+  } catch (error) {
+    console.error('scrape-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/scrape-missing-emails', async (req, res) => {
+  try {
+    const prospects = await store.loadProspects();
+    const targets = prospects.filter(p => p.website && !p.email);
+    let foundCount = 0;
+    let next = 0;
+    const workers = Array.from({ length: Math.min(5, targets.length) }, async () => {
+      while (next < targets.length) {
+        const p = targets[next++];
+        try {
+          const email = await emailScraper.scrapeEmailFromWebsite(p.website);
+          if (email) {
+            await store.updateProspect(p.id, { email });
+            foundCount += 1;
+          }
+        } catch (e) {
+          console.error(`[scrape-missing-emails] Failed for "${p.businessName}":`, e.message);
+        }
+      }
+    });
+    await Promise.all(workers);
+    res.json({ scanned: targets.length, found: foundCount });
+  } catch (error) {
+    console.error('scrape-missing-emails error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/outreach/settings', async (req, res) => {
   res.json(await store.loadSettings());
 });
@@ -177,8 +245,9 @@ const runDiscoveryAndSave = async () => {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const settings = await store.loadSettings();
   const existingProspects = await store.loadProspects();
+  const excludedIdentifiers = await store.loadExcludedIdentifiers();
 
-  const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings });
+  const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings, excludedIdentifiers });
   if (found.length > 0) {
     const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
     await store.bulkAddProspects(enriched);
@@ -222,10 +291,11 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
       return res.status(400).json({ error: 'freelancerTypes is required' });
     }
     const existingProspects = await store.loadProspects();
+    const excludedIdentifiers = await store.loadExcludedIdentifiers();
     const found = await freelancerFinder.runFreelancerDiscovery({
       apiKey: (process.env.BlissAgentCustomSearchEng || '').trim(),
       cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
-      existingProspects, cities, freelancerTypes, countPerType: countPerType || 5,
+      existingProspects, cities, freelancerTypes, countPerType: countPerType || 5, excludedIdentifiers,
     });
     if (found.length > 0) {
       const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;

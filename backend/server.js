@@ -10,6 +10,7 @@ const outreachAgent = require('./outreachAgent');
 const prospectFinder = require('./prospectFinder');
 const freelancerFinder = require('./freelancerFinder');
 const emailSender = require('./emailSender');
+const emailScraper = require('./emailScraper');
 const cron = require('node-cron');
 
 const app = express();
@@ -265,13 +266,18 @@ const enrichProspect = async (prospect) => {
     const gaps = await outreachAgent.suggestGaps(openai, {
       businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
     });
-    const email = await outreachAgent.draftEmail(openai, {
+    const draftArgs = {
       businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
-      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
-    });
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
+    };
+    const [email, whatsappMessage] = await Promise.all([
+      outreachAgent.draftEmail(openai, draftArgs),
+      outreachAgent.draftMessage(openai, draftArgs),
+    ]);
     return {
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
       draftEmailSubject: email.subject, draftEmailBody: email.body,
+      draftMessage: whatsappMessage,
     };
   } catch (error) {
     console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
@@ -334,6 +340,8 @@ app.put('/api/outreach/prospects/:id', (req, res) => {
 
 app.delete('/api/outreach/prospects/:id', (req, res) => {
   const prospects = outreachAgent.loadProspects();
+  const deleted = prospects.find(p => p.id === req.params.id);
+  if (deleted) outreachAgent.excludeIdentifiers(deleted.placeId, deleted.sourceUrl);
   const filtered = prospects.filter(p => p.id !== req.params.id);
   outreachAgent.saveProspects(filtered);
   res.json({ message: 'Deleted' });
@@ -427,6 +435,69 @@ app.get('/api/outreach/track-open/:id', (req, res) => {
   res.send(emailSender.TRACKING_PIXEL_GIF);
 });
 
+// Catches up any prospect added before auto-drafting existed (or where it
+// failed) — drafts gaps + email for everyone currently missing a draft.
+app.post('/api/outreach/draft-missing', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  }
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const missing = prospects.filter(p => !p.draftEmailBody);
+    const enriched = await enrichProspectsConcurrently(missing);
+    const byId = new Map(enriched.map(p => [p.id, p]));
+    const updated = prospects.map(p => byId.get(p.id) || p);
+    outreachAgent.saveProspects(updated);
+    res.json({ updated: enriched.length });
+  } catch (error) {
+    console.error('draft-missing error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/scrape-email/:id', async (req, res) => {
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const prospect = prospects.find(p => p.id === req.params.id);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+    if (!prospect.website) return res.status(400).json({ error: 'Prospect has no website to scrape' });
+    const email = await emailScraper.scrapeEmailFromWebsite(prospect.website);
+    if (!email) return res.json({ found: false, prospect });
+    prospect.email = email;
+    outreachAgent.saveProspects(prospects);
+    res.json({ found: true, prospect });
+  } catch (error) {
+    console.error('scrape-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/scrape-missing-emails', async (req, res) => {
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const targets = prospects.filter(p => p.website && !p.email);
+    let foundCount = 0;
+    let next = 0;
+    const workers = Array.from({ length: Math.min(5, targets.length) }, async () => {
+      while (next < targets.length) {
+        const p = targets[next++];
+        try {
+          const email = await emailScraper.scrapeEmailFromWebsite(p.website);
+          if (email) { p.email = email; foundCount += 1; }
+        } catch (e) {
+          console.error(`[scrape-missing-emails] Failed for "${p.businessName}":`, e.message);
+        }
+      }
+    });
+    await Promise.all(workers);
+    outreachAgent.saveProspects(prospects);
+    res.json({ scanned: targets.length, found: foundCount });
+  } catch (error) {
+    console.error('scrape-missing-emails error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/outreach/settings', (req, res) => {
   res.json(prospectFinder.loadSettings());
 });
@@ -441,8 +512,9 @@ const runDiscoveryAndSave = async () => {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   const settings = prospectFinder.loadSettings();
   const existingProspects = outreachAgent.loadProspects();
+  const excludedIdentifiers = outreachAgent.loadExcludedIdentifiers();
 
-  const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings });
+  const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings, excludedIdentifiers });
 
   if (found.length > 0) {
     const now = new Date().toISOString();
@@ -495,10 +567,11 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
       return res.status(400).json({ error: 'freelancerTypes is required' });
     }
     const existingProspects = outreachAgent.loadProspects();
+    const excludedIdentifiers = outreachAgent.loadExcludedIdentifiers();
     const found = await freelancerFinder.runFreelancerDiscovery({
       apiKey: (process.env.BlissAgentCustomSearchEng || '').trim(),
       cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
-      existingProspects, cities, freelancerTypes, countPerType: countPerType || 5,
+      existingProspects, cities, freelancerTypes, countPerType: countPerType || 5, excludedIdentifiers,
     });
     if (found.length > 0) {
       const now = new Date().toISOString();

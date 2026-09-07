@@ -76,10 +76,11 @@ const findBusinesses = async ({ apiKey, city, businessType, count }) => {
 
 // Runs discovery across all configured business types for the configured city.
 // Skips any place_id already present among existing prospects (dedupe).
-const runDailyDiscovery = async ({ apiKey, existingProspects, settings }) => {
+const runDailyDiscovery = async ({ apiKey, existingProspects, settings, excludedIdentifiers }) => {
   if (!apiKey) throw new Error('GOOGLE_PLACES_API_KEY secret is not set');
 
   const existingPlaceIds = new Set(existingProspects.map(p => p.placeId).filter(Boolean));
+  const excluded = excludedIdentifiers || new Set();
   const found = [];
   const cities = settings.cities?.length ? settings.cities : DEFAULT_CITIES;
 
@@ -89,7 +90,7 @@ const runDailyDiscovery = async ({ apiKey, existingProspects, settings }) => {
         apiKey, city, businessType, count: settings.countPerType,
       });
       for (const p of batch) {
-        if (p.placeId && existingPlaceIds.has(p.placeId)) continue;
+        if (p.placeId && (existingPlaceIds.has(p.placeId) || excluded.has(p.placeId))) continue;
         found.push(p);
         if (p.placeId) existingPlaceIds.add(p.placeId);
       }

@@ -4,3 +4,4 @@ screenshots/
 dist/
 .env
 .DS_Store
+.firebase/
