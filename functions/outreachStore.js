@@ -55,11 +55,17 @@ const bulkAddProspects = async (prospectFields) => {
 };
 
 const DEFAULT_SETTINGS = {
-  city: 'Bangalore',
+  cities: ['Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam'],
   businessTypes: ['Hotel/Homestay', 'Restaurant/Café', 'Coaching Institute', 'Wellness Business'],
   countPerType: 3,
   dailyRunHour: 8,
   lastRunDate: null,
+  dailyEmailSendLimit: 20,
+  emailsPerBatch: 2,
+  emailSendWindowStartHour: 9,
+  emailSendWindowEndHour: 20,
+  emailsSentToday: 0,
+  emailSendDate: null,
 };
 
 const loadSettings = async () => {

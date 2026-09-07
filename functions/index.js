@@ -15,7 +15,7 @@ const emailSender = require('./emailSender');
 
 const API_SECRETS = [
   'GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS',
-  'GOOGLE_CUSTOM_SEARCH_API_KEY', 'GOOGLE_CUSTOM_SEARCH_CX',
+  'BlissAgentCustomSearchEng', 'GOOGLE_CUSTOM_SEARCH_CX',
 ];
 const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY'];
 
@@ -146,11 +146,11 @@ const runDiscoveryAndSave = async () => {
 app.post('/api/outreach/find-prospects', async (req, res) => {
   if (!process.env.GOOGLE_PLACES_API_KEY) return res.status(500).json({ error: 'GOOGLE_PLACES_API_KEY secret is not set' });
   try {
-    const { city, businessTypes, countPerType } = req.body;
-    if (city || businessTypes || countPerType) {
+    const { cities, businessTypes, countPerType } = req.body;
+    if (cities || businessTypes || countPerType) {
       await store.saveSettings({
         ...(await store.loadSettings()),
-        ...(city && { city }),
+        ...(cities && { cities }),
         ...(businessTypes && { businessTypes }),
         ...(countPerType && { countPerType }),
       });
@@ -168,19 +168,19 @@ app.get('/api/outreach/freelancer-types', (req, res) => {
 });
 
 app.post('/api/outreach/find-freelancers', async (req, res) => {
-  if (!process.env.GOOGLE_CUSTOM_SEARCH_API_KEY || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
-    return res.status(500).json({ error: 'GOOGLE_CUSTOM_SEARCH_API_KEY / GOOGLE_CUSTOM_SEARCH_CX secrets are not set' });
+  if (!process.env.BlissAgentCustomSearchEng || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: 'BlissAgentCustomSearchEng / GOOGLE_CUSTOM_SEARCH_CX secrets are not set' });
   }
   try {
-    const { city, freelancerTypes, countPerType } = req.body;
-    if (!city || !freelancerTypes?.length) {
-      return res.status(400).json({ error: 'city and freelancerTypes are required' });
+    const { cities, freelancerTypes, countPerType } = req.body;
+    if (!freelancerTypes?.length) {
+      return res.status(400).json({ error: 'freelancerTypes is required' });
     }
     const existingProspects = await store.loadProspects();
     const found = await freelancerFinder.runFreelancerDiscovery({
-      apiKey: process.env.GOOGLE_CUSTOM_SEARCH_API_KEY,
-      cx: process.env.GOOGLE_CUSTOM_SEARCH_CX,
-      existingProspects, city, freelancerTypes, countPerType: countPerType || 5,
+      apiKey: (process.env.BlissAgentCustomSearchEng || '').trim(),
+      cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
+      existingProspects, cities, freelancerTypes, countPerType: countPerType || 5,
     });
     if (found.length > 0) await store.bulkAddProspects(found);
     res.json({ found });
@@ -200,6 +200,80 @@ exports.dailyProspectDiscovery = onSchedule(
       console.log(`[daily discovery] Added ${found.length} new prospects.`);
     } catch (error) {
       console.error('[daily discovery] Failed:', error.message);
+    }
+  }
+);
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Sends a small batch of already-approved emails, paced to look human (a few per
+// hour, capped per day) rather than firing the whole daily quota at once. Never
+// sends anything the user hasn't explicitly approved first.
+const sendApprovedBatch = async () => {
+  const settings = await store.loadSettings();
+  const now = new Date();
+  const hourIST = Number(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', hour12: false }));
+  const todayIST = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+  if (hourIST < (settings.emailSendWindowStartHour ?? 9) || hourIST >= (settings.emailSendWindowEndHour ?? 20)) {
+    return { sent: 0, reason: 'outside sending window' };
+  }
+
+  const emailsSentToday = settings.emailSendDate === todayIST ? (settings.emailsSentToday || 0) : 0;
+  const remaining = (settings.dailyEmailSendLimit ?? 20) - emailsSentToday;
+  if (remaining <= 0) return { sent: 0, reason: 'daily limit reached' };
+
+  const batchSize = Math.min(settings.emailsPerBatch ?? 2, remaining);
+  const prospects = await store.loadProspects();
+  const queue = prospects
+    .filter(p => p.emailApproved && !p.emailSentAt && p.email)
+    .sort((a, b) => (a.approvedAt || a.createdAt || '').localeCompare(b.approvedAt || b.createdAt || ''))
+    .slice(0, batchSize);
+
+  let sentCount = 0;
+  for (const prospect of queue) {
+    try {
+      const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
+      await emailSender.sendEmail({
+        to: prospect.email, subject: prospect.draftEmailSubject, body: prospect.draftEmailBody,
+        fromName: 'Shruti | SKRM Bliss AI', trackingUrl,
+      });
+      const followUpDate = new Date();
+      followUpDate.setDate(followUpDate.getDate() + 3);
+      await store.updateProspect(prospect.id, {
+        emailSentAt: now.toISOString(),
+        status: prospect.status === 'New' ? 'Contacted' : prospect.status,
+        lastContactDate: todayIST,
+        followUpDate: followUpDate.toISOString().slice(0, 10),
+      });
+      sentCount += 1;
+      await sleep(3000);
+    } catch (error) {
+      console.error(`[email queue] Failed to send to ${prospect.email}:`, error.message);
+    }
+  }
+
+  await store.saveSettings({ ...settings, emailsSentToday: emailsSentToday + sentCount, emailSendDate: todayIST });
+  return { sent: sentCount, queueSize: queue.length };
+};
+
+app.post('/api/outreach/send-approved-batch', async (req, res) => {
+  try {
+    res.json(await sendApprovedBatch());
+  } catch (error) {
+    console.error('send-approved-batch error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+exports.sendApprovedEmailBatch = onSchedule(
+  { schedule: 'every 1 hours', secrets: ['EMAIL_USER', 'EMAIL_PASS'] },
+  async () => {
+    try {
+      const result = await sendApprovedBatch();
+      console.log(`[email queue] Sent ${result.sent} email(s).`, result.reason || '');
+    } catch (error) {
+      console.error('[email queue] Failed:', error.message);
     }
   }
 );

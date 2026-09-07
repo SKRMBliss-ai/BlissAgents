@@ -49,6 +49,7 @@ const sendEmail = async ({ to, subject, body, fromName, trackingUrl }) => {
   await transporter.sendMail({
     from: fromName ? `"${fromName}" <${fromAddress}>` : fromAddress,
     to,
+    cc: 'connect@skrmblissai.in',
     subject,
     html,
     text: body,

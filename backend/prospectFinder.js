@@ -14,11 +14,27 @@ const FIELD_MASK = [
   'places.rating',
 ].join(',');
 
+// Tier 1: highest priority (high paying capacity, less saturated digital services market).
+// Tier 2: strong opportunities, less saturated. Tier 3: emerging markets worth testing.
+const DEFAULT_CITIES = [
+  'Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam',
+  'Manila', 'Ho Chi Minh City', 'Auckland', 'Vienna', 'Brussels', 'Lisbon',
+  'Stockholm', 'Copenhagen', 'Oslo', 'Helsinki', 'Zurich',
+  'Mexico City', 'Cairo', 'Nairobi', 'Lagos', 'Warsaw', 'Prague', 'Bucharest', 'Budapest', 'Tallinn',
+];
+const TIER_1_CITIES = ['Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam'];
+
 const loadSettings = () => {
   try {
-    return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    // Migrate old single-city settings to the cities array.
+    if (settings.city && !settings.cities) {
+      settings.cities = [settings.city];
+      delete settings.city;
+    }
+    return settings;
   } catch (e) {
-    return { city: 'Bangalore', businessTypes: [], countPerType: 3, dailyRunHour: 8, lastRunDate: null };
+    return { cities: DEFAULT_CITIES, businessTypes: [], countPerType: 3, dailyRunHour: 8, lastRunDate: null };
   }
 };
 
@@ -90,15 +106,18 @@ const runDailyDiscovery = async ({ apiKey, existingProspects, settings }) => {
 
   const existingPlaceIds = new Set(existingProspects.map(p => p.placeId).filter(Boolean));
   const found = [];
+  const cities = settings.cities?.length ? settings.cities : DEFAULT_CITIES;
 
-  for (const businessType of settings.businessTypes) {
-    const batch = await findBusinesses({
-      apiKey, city: settings.city, businessType, count: settings.countPerType,
-    });
-    for (const p of batch) {
-      if (p.placeId && existingPlaceIds.has(p.placeId)) continue;
-      found.push(p);
-      if (p.placeId) existingPlaceIds.add(p.placeId);
+  for (const city of cities) {
+    for (const businessType of settings.businessTypes) {
+      const batch = await findBusinesses({
+        apiKey, city, businessType, count: settings.countPerType,
+      });
+      for (const p of batch) {
+        if (p.placeId && existingPlaceIds.has(p.placeId)) continue;
+        found.push(p);
+        if (p.placeId) existingPlaceIds.add(p.placeId);
+      }
     }
   }
 

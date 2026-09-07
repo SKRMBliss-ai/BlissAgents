@@ -14,6 +14,12 @@ const BUSINESS_TYPES = [
   'Clinic', 'Small Manufacturer', 'Real Estate', 'Consultant', 'Local Retailer', 'Startup',
   'Laughter Yoga', 'Yoga Studio', 'Counsellor/Therapist', 'Art/Design Studio', 'Other',
 ];
+// Tier 1: highest priority. Tier 2: strong opportunities, less saturated.
+// Tier 3: emerging markets worth testing.
+const TIER_1_CITIES = ['Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam'];
+const TIER_2_CITIES = ['Manila', 'Ho Chi Minh City', 'Auckland', 'Vienna', 'Brussels', 'Lisbon', 'Stockholm', 'Copenhagen', 'Oslo', 'Helsinki', 'Zurich'];
+const TIER_3_CITIES = ['Mexico City', 'Cairo', 'Nairobi', 'Lagos', 'Warsaw', 'Prague', 'Bucharest', 'Budapest', 'Tallinn'];
+const DEFAULT_CITIES = [...TIER_1_CITIES, ...TIER_2_CITIES, ...TIER_3_CITIES];
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const daysSince = (iso) => {
@@ -63,7 +69,7 @@ function OutreachAgent() {
   const [sortDir, setSortDir] = useState('desc');
   const [freelancerTypes, setFreelancerTypes] = useState([]);
   const [selectedFreelancerTypes, setSelectedFreelancerTypes] = useState([]);
-  const [freelancerCity, setFreelancerCity] = useState('Bangalore');
+  const [freelancerCities, setFreelancerCities] = useState([]);
   const [findingFreelancers, setFindingFreelancers] = useState(false);
   const [freelancerError, setFreelancerError] = useState('');
   const [freelancerResultCount, setFreelancerResultCount] = useState(null);
@@ -102,7 +108,7 @@ function OutreachAgent() {
       const res = await fetch(`${API}/find-freelancers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ city: freelancerCity, freelancerTypes: selectedFreelancerTypes, countPerType: 5 }),
+        body: JSON.stringify({ cities: freelancerCities.length ? freelancerCities : undefined, freelancerTypes: selectedFreelancerTypes, countPerType: 5 }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -150,6 +156,17 @@ function OutreachAgent() {
     const next = current.includes(type) ? current.filter(t => t !== type) : [...current, type];
     setSettings(s => ({ ...s, businessTypes: next }));
     saveSettings({ businessTypes: next });
+  };
+
+  const toggleCity = (city) => {
+    const current = settings.cities || [];
+    const next = current.includes(city) ? current.filter(c => c !== city) : [...current, city];
+    setSettings(s => ({ ...s, cities: next }));
+    saveSettings({ cities: next });
+  };
+
+  const toggleFreelancerCity = (city) => {
+    setFreelancerCities(prev => prev.includes(city) ? prev.filter(c => c !== city) : [...prev, city]);
   };
 
   const updateProspect = async (id, patch) => {
@@ -263,6 +280,12 @@ function OutreachAgent() {
     }
   };
 
+  const handleApproveEmail = (p) => updateProspect(p.id, {
+    emailApproved: true, approvedAt: new Date().toISOString(),
+  });
+
+  const handleUnapproveEmail = (p) => updateProspect(p.id, { emailApproved: false });
+
   const markContacted = (p) => updateProspect(p.id, {
     status: 'Contacted', lastContactDate: todayStr(), followUpDate: addDays(todayStr(), 3),
   });
@@ -291,7 +314,8 @@ function OutreachAgent() {
       ['No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'].includes(p.status)
     ).length;
     const emailsOpened = prospects.filter(p => p.emailOpenedAt).length;
-    return { total, reachedOut, followedUp, emailsOpened };
+    const queuedForSend = prospects.filter(p => p.emailApproved && !p.emailSentAt).length;
+    return { total, reachedOut, followedUp, emailsOpened, queuedForSend };
   }, [prospects]);
 
   const sortedProspects = useMemo(() => {
@@ -333,12 +357,48 @@ function OutreachAgent() {
       </header>
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard icon={<Users className="w-5 h-5 text-gray-400" />} value={stats.total} label="Prospects" />
         <StatCard icon={<Send className="w-5 h-5 text-blue-400" />} value={stats.reachedOut} label="Reached Out" />
         <StatCard icon={<Repeat className="w-5 h-5 text-orange-400" />} value={stats.followedUp} label="Followed Up" />
         <StatCard icon={<Mail className="w-5 h-5 text-purple-400" />} value={stats.emailsOpened} label="Emails Opened" />
+        <StatCard icon={<CheckCircle2 className="w-5 h-5 text-indigo-400" />} value={stats.queuedForSend} label="Queued to Send" />
       </div>
+
+      {/* Email Queue Settings */}
+      {settings && (
+        <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-3">
+          <h2 className="text-lg font-semibold text-white">Daily Email Queue</h2>
+          <p className="text-xs text-gray-500">
+            Emails you approve get sent automatically in small paced batches — {settings.emailsPerBatch ?? 2} per hour between {settings.emailSendWindowStartHour ?? 9}:00–{settings.emailSendWindowEndHour ?? 20}:00 IST, up to a daily cap. Keeps sending going even on days you can't check in.
+          </p>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Daily limit</label>
+              <input
+                type="number" min={1} max={200}
+                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-24"
+                value={settings.dailyEmailSendLimit ?? 20}
+                onChange={e => setSettings(s => ({ ...s, dailyEmailSendLimit: Number(e.target.value) }))}
+                onBlur={() => saveSettings({ dailyEmailSendLimit: settings.dailyEmailSendLimit })}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Per batch (hourly)</label>
+              <input
+                type="number" min={1} max={20}
+                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-24"
+                value={settings.emailsPerBatch ?? 2}
+                onChange={e => setSettings(s => ({ ...s, emailsPerBatch: Number(e.target.value) }))}
+                onBlur={() => saveSettings({ emailsPerBatch: settings.emailsPerBatch })}
+              />
+            </div>
+            <div className="text-xs text-gray-500">
+              Sent today: {settings.emailSendDate === new Date().toISOString().slice(0, 10) ? (settings.emailsSentToday || 0) : 0} / {settings.dailyEmailSendLimit ?? 20}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Prospect Discovery */}
       {settings && (
@@ -354,15 +414,6 @@ function OutreachAgent() {
             </p>
           </div>
           <div className="flex flex-wrap gap-4 items-end">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">City</label>
-              <input
-                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-40"
-                value={settings.city}
-                onChange={e => setSettings(s => ({ ...s, city: e.target.value }))}
-                onBlur={() => saveSettings({ city: settings.city })}
-              />
-            </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Per category</label>
               <input
@@ -381,6 +432,33 @@ function OutreachAgent() {
               {findingProspects ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
               <span>Find Prospects Now</span>
             </button>
+          </div>
+          <div className="space-y-3">
+            <label className="block text-xs text-gray-400">Cities to search</label>
+            {[
+              { label: 'Tier 1 — Highest priority', cities: TIER_1_CITIES },
+              { label: 'Tier 2 — Strong opportunities', cities: TIER_2_CITIES },
+              { label: 'Tier 3 — Emerging markets', cities: TIER_3_CITIES },
+            ].map(tier => (
+              <div key={tier.label}>
+                <div className="text-[10px] uppercase tracking-wider text-gray-600 mb-1">{tier.label}</div>
+                <div className="flex flex-wrap gap-2">
+                  {tier.cities.map(city => (
+                    <button
+                      key={city}
+                      onClick={() => toggleCity(city)}
+                      className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                        settings.cities?.includes(city)
+                          ? 'bg-emerald-900/40 border-emerald-600 text-emerald-300'
+                          : 'bg-gray-900 border-gray-700 text-gray-400'
+                      }`}
+                    >
+                      {city}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
           <div>
             <label className="block text-xs text-gray-400 mb-2">Business types to search</label>
@@ -422,14 +500,6 @@ function OutreachAgent() {
             Searches Google's public index (LinkedIn/Behance profiles) — no phone/email comes back automatically, so these prospects are flagged "Needs contact info" until you look them up and paste it in.
           </p>
           <div className="flex flex-wrap gap-4 items-end">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">City</label>
-              <input
-                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-40"
-                value={freelancerCity}
-                onChange={e => setFreelancerCity(e.target.value)}
-              />
-            </div>
             <button
               onClick={handleFindFreelancers}
               disabled={findingFreelancers}
@@ -438,6 +508,26 @@ function OutreachAgent() {
               {findingFreelancers ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
               <span>Find Freelancers Now</span>
             </button>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-2">
+              Cities to search <span className="text-gray-600">(none selected = search globally)</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {DEFAULT_CITIES.map(city => (
+                <button
+                  key={city}
+                  onClick={() => toggleFreelancerCity(city)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                    freelancerCities.includes(city)
+                      ? 'bg-purple-900/40 border-purple-600 text-purple-300'
+                      : 'bg-gray-900 border-gray-700 text-gray-400'
+                  }`}
+                >
+                  {city}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <label className="block text-xs text-gray-400 mb-2">Categories to search</label>
@@ -533,6 +623,8 @@ function OutreachAgent() {
                     onDraftMessage={() => handleDraftMessage(p)}
                     onDraftEmail={() => handleDraftEmail(p)}
                     onSendEmail={() => handleSendEmail(p)}
+                    onApproveEmail={() => handleApproveEmail(p)}
+                    onUnapproveEmail={() => handleUnapproveEmail(p)}
                     onMarkContacted={() => markContacted(p)}
                     onSetStatus={(s) => setStatus(p, s)}
                     onDelete={() => deleteProspect(p.id)}
@@ -651,7 +743,7 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
+function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
   return (
     <>
       <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
@@ -820,14 +912,39 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                         value={p.draftEmailBody}
                         onChange={e => onFieldChange('draftEmailBody', e.target.value)}
                       />
-                      <button
-                        onClick={onSendEmail}
-                        disabled={!p.email || busyId === p.id + '-send'}
-                        className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
-                      >
-                        {busyId === p.id + '-send' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                        <span>Send Email{p.email ? ` to ${p.email}` : ' (no email on file)'}</span>
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={onSendEmail}
+                          disabled={!p.email || busyId === p.id + '-send'}
+                          className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
+                        >
+                          {busyId === p.id + '-send' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                          <span>Send Now{p.email ? ` to ${p.email}` : ' (no email on file)'}</span>
+                        </button>
+                        {p.emailSentAt ? (
+                          <span className="text-xs text-gray-500">Sent {new Date(p.emailSentAt).toLocaleString()}</span>
+                        ) : p.emailApproved ? (
+                          <button
+                            onClick={onUnapproveEmail}
+                            className="flex items-center space-x-2 bg-orange-900/40 hover:bg-orange-900/60 border border-orange-700/50 text-orange-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Queued — click to unqueue</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={onApproveEmail}
+                            disabled={!p.email}
+                            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Approve for Daily Queue</span>
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        "Send Now" sends immediately. "Approve for Daily Queue" sends it automatically in a small paced batch over the coming days (settings below) — for when you can't check in daily.
+                      </p>
                     </div>
                   )}
 
