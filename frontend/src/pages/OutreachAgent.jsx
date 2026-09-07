@@ -61,6 +61,12 @@ function OutreachAgent() {
   const [findResultCount, setFindResultCount] = useState(null);
   const [sortBy, setSortBy] = useState('createdAt');
   const [sortDir, setSortDir] = useState('desc');
+  const [freelancerTypes, setFreelancerTypes] = useState([]);
+  const [selectedFreelancerTypes, setSelectedFreelancerTypes] = useState([]);
+  const [freelancerCity, setFreelancerCity] = useState('Bangalore');
+  const [findingFreelancers, setFindingFreelancers] = useState(false);
+  const [freelancerError, setFreelancerError] = useState('');
+  const [freelancerResultCount, setFreelancerResultCount] = useState(null);
 
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
@@ -73,7 +79,41 @@ function OutreachAgent() {
     setSettings(await res.json());
   };
 
-  useEffect(() => { fetchProspects(); fetchSettings(); }, []);
+  const fetchFreelancerTypes = async () => {
+    try {
+      const res = await fetch(`${API}/freelancer-types`);
+      const data = await res.json();
+      setFreelancerTypes(data.types || []);
+    } catch (e) { /* endpoint optional; ignore if unavailable */ }
+  };
+
+  useEffect(() => { fetchProspects(); fetchSettings(); fetchFreelancerTypes(); }, []);
+
+  const toggleFreelancerType = (type) => {
+    setSelectedFreelancerTypes(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]);
+  };
+
+  const handleFindFreelancers = async () => {
+    if (selectedFreelancerTypes.length === 0) return alert('Pick at least one category.');
+    setFindingFreelancers(true);
+    setFreelancerError('');
+    setFreelancerResultCount(null);
+    try {
+      const res = await fetch(`${API}/find-freelancers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ city: freelancerCity, freelancerTypes: selectedFreelancerTypes, countPerType: 5 }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setFreelancerResultCount(data.found.length);
+      await fetchProspects();
+    } catch (e) {
+      setFreelancerError(e.message);
+    } finally {
+      setFindingFreelancers(false);
+    }
+  };
 
   const saveSettings = async (patch) => {
     const res = await fetch(`${API}/settings`, {
@@ -371,6 +411,63 @@ function OutreachAgent() {
         </div>
       )}
 
+      {/* Freelancer Discovery */}
+      {freelancerTypes.length > 0 && (
+        <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
+          <div className="flex items-center space-x-2">
+            <Users className="w-5 h-5 text-purple-400" />
+            <h2 className="text-lg font-semibold text-white">Find Freelance Professionals</h2>
+          </div>
+          <p className="text-xs text-gray-500">
+            Searches Google's public index (LinkedIn/Behance profiles) — no phone/email comes back automatically, so these prospects are flagged "Needs contact info" until you look them up and paste it in.
+          </p>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">City</label>
+              <input
+                className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none w-40"
+                value={freelancerCity}
+                onChange={e => setFreelancerCity(e.target.value)}
+              />
+            </div>
+            <button
+              onClick={handleFindFreelancers}
+              disabled={findingFreelancers}
+              className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 px-5 rounded-lg transition-all"
+            >
+              {findingFreelancers ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
+              <span>Find Freelancers Now</span>
+            </button>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-2">Categories to search</label>
+            <div className="flex flex-wrap gap-2">
+              {freelancerTypes.map(type => (
+                <button
+                  key={type}
+                  onClick={() => toggleFreelancerType(type)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all ${
+                    selectedFreelancerTypes.includes(type)
+                      ? 'bg-purple-900/40 border-purple-600 text-purple-300'
+                      : 'bg-gray-900 border-gray-700 text-gray-400'
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+          {freelancerError && (
+            <div className="text-sm text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg p-3">{freelancerError}</div>
+          )}
+          {freelancerResultCount !== null && !freelancerError && (
+            <div className="text-sm text-purple-400 bg-purple-900/20 border border-purple-800/50 rounded-lg p-3">
+              Added {freelancerResultCount} new prospect{freelancerResultCount === 1 ? '' : 's'}.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Daily Digest */}
       <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
         <h2 className="text-lg font-semibold text-white">
@@ -569,7 +666,13 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
           <span className={`px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
         </td>
         <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.contactPerson || '—'}</td>
-        <td className="px-4 py-3 text-gray-400 truncate max-w-[160px]">{p.email || '—'}</td>
+        <td className="px-4 py-3 text-gray-400 truncate max-w-[160px]">
+          {p.email ? p.email : p.needsManualContact ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-900/40 border border-orange-700/50 text-orange-300 whitespace-nowrap">
+              Needs contact info
+            </span>
+          ) : '—'}
+        </td>
         <td className="px-4 py-3 whitespace-nowrap">
           {p.whatsapp ? (
             <a
@@ -599,9 +702,32 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                 className="overflow-hidden"
               >
                 <div className="p-5 space-y-4 bg-gray-900/40">
+                  {p.needsManualContact && !p.email && !p.whatsapp && (
+                    <div className="text-xs text-orange-300 bg-orange-900/20 border border-orange-800/50 rounded-lg p-3">
+                      Sourced from web search — no phone/email available automatically. Look up their contact info (their profile/website) and paste it in below.
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                     <InfoLine label="Website" value={p.website} />
                     <InfoLine label="Instagram" value={p.instagram} />
+                    <div onClick={e => e.stopPropagation()}>
+                      <label className="block text-xs text-gray-500 mb-1">Email</label>
+                      <input
+                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
+                        value={p.email || ''}
+                        placeholder="paste email here"
+                        onChange={e => onFieldChange('email', e.target.value)}
+                      />
+                    </div>
+                    <div onClick={e => e.stopPropagation()}>
+                      <label className="block text-xs text-gray-500 mb-1">WhatsApp</label>
+                      <input
+                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
+                        value={p.whatsapp || ''}
+                        placeholder="paste phone number here"
+                        onChange={e => onFieldChange('whatsapp', e.target.value)}
+                      />
+                    </div>
                     <InfoLine label="Email Opened" value={p.emailOpenedAt ? new Date(p.emailOpenedAt).toLocaleString() : null} />
                   </div>
 

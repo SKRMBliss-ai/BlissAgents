@@ -9,10 +9,14 @@ admin.initializeApp();
 
 const store = require('./outreachStore');
 const prospectFinder = require('./prospectFinder');
+const freelancerFinder = require('./freelancerFinder');
 const aiHelpers = require('./aiHelpers');
 const emailSender = require('./emailSender');
 
-const API_SECRETS = ['GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS'];
+const API_SECRETS = [
+  'GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS',
+  'GOOGLE_CUSTOM_SEARCH_API_KEY', 'GOOGLE_CUSTOM_SEARCH_CX',
+];
 const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY'];
 
 const getOpenAI = () => new OpenAI({
@@ -155,6 +159,33 @@ app.post('/api/outreach/find-prospects', async (req, res) => {
     res.json({ found });
   } catch (error) {
     console.error('find-prospects error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/outreach/freelancer-types', (req, res) => {
+  res.json({ types: freelancerFinder.FREELANCER_TYPES });
+});
+
+app.post('/api/outreach/find-freelancers', async (req, res) => {
+  if (!process.env.GOOGLE_CUSTOM_SEARCH_API_KEY || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: 'GOOGLE_CUSTOM_SEARCH_API_KEY / GOOGLE_CUSTOM_SEARCH_CX secrets are not set' });
+  }
+  try {
+    const { city, freelancerTypes, countPerType } = req.body;
+    if (!city || !freelancerTypes?.length) {
+      return res.status(400).json({ error: 'city and freelancerTypes are required' });
+    }
+    const existingProspects = await store.loadProspects();
+    const found = await freelancerFinder.runFreelancerDiscovery({
+      apiKey: process.env.GOOGLE_CUSTOM_SEARCH_API_KEY,
+      cx: process.env.GOOGLE_CUSTOM_SEARCH_CX,
+      existingProspects, city, freelancerTypes, countPerType: countPerType || 5,
+    });
+    if (found.length > 0) await store.bulkAddProspects(found);
+    res.json({ found });
+  } catch (error) {
+    console.error('find-freelancers error:', error);
     res.status(500).json({ error: error.message });
   }
 });

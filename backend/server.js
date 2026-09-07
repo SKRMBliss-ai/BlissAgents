@@ -8,6 +8,7 @@ const fs = require('fs');
 const { startBot, stopBot, approvePost } = require('./bot');
 const outreachAgent = require('./outreachAgent');
 const prospectFinder = require('./prospectFinder');
+const freelancerFinder = require('./freelancerFinder');
 const emailSender = require('./emailSender');
 const cron = require('node-cron');
 
@@ -435,6 +436,42 @@ app.post('/api/outreach/find-prospects', async (req, res) => {
     res.json({ found });
   } catch (error) {
     console.error('find-prospects error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/outreach/freelancer-types', (req, res) => {
+  res.json({ types: freelancerFinder.FREELANCER_TYPES });
+});
+
+app.post('/api/outreach/find-freelancers', async (req, res) => {
+  if (!process.env.GOOGLE_CUSTOM_SEARCH_API_KEY || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: 'GOOGLE_CUSTOM_SEARCH_API_KEY / GOOGLE_CUSTOM_SEARCH_CX is not set in backend/.env' });
+  }
+  try {
+    const { city, freelancerTypes, countPerType } = req.body;
+    if (!city || !freelancerTypes?.length) {
+      return res.status(400).json({ error: 'city and freelancerTypes are required' });
+    }
+    const existingProspects = outreachAgent.loadProspects();
+    const found = await freelancerFinder.runFreelancerDiscovery({
+      apiKey: process.env.GOOGLE_CUSTOM_SEARCH_API_KEY,
+      cx: process.env.GOOGLE_CUSTOM_SEARCH_CX,
+      existingProspects, city, freelancerTypes, countPerType: countPerType || 5,
+    });
+    if (found.length > 0) {
+      const now = new Date().toISOString();
+      const withDefaults = found.map((p, i) => ({
+        id: (Date.now() + i).toString(),
+        digitalGaps: [], recommendedService: '', draftMessage: '', status: 'New',
+        createdAt: now, lastContactDate: null, followUpDate: null,
+        ...p,
+      }));
+      outreachAgent.saveProspects([...withDefaults, ...existingProspects]);
+    }
+    res.json({ found });
+  } catch (error) {
+    console.error('find-freelancers error:', error);
     res.status(500).json({ error: error.message });
   }
 });
