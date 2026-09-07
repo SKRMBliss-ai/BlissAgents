@@ -4,6 +4,7 @@ import { Home } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import FBAgent from './pages/FBAgent';
 import YTAgent from './pages/YTAgent';
+import OutreachAgent from './pages/OutreachAgent';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/fb-agent" element={<FBAgent />} />
             <Route path="/yt-agent" element={<YTAgent />} />
+            <Route path="/outreach-agent" element={<OutreachAgent />} />
           </Routes>
         </main>
       </div>

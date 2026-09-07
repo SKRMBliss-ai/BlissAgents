@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, Video, Sparkles } from 'lucide-react';
+import { Share2, Video, Sparkles, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 function Dashboard() {
@@ -20,6 +20,14 @@ function Dashboard() {
       icon: <Video className="w-8 h-8 text-red-500" />,
       path: '/yt-agent',
       color: 'from-red-500 to-pink-600',
+    },
+    {
+      id: 'outreach',
+      title: 'Business Outreach Agent',
+      description: 'Research prospects, draft personalized outreach messages, and track follow-ups — you approve every message before it goes out.',
+      icon: <Users className="w-8 h-8 text-emerald-500" />,
+      path: '/outreach-agent',
+      color: 'from-emerald-500 to-teal-600',
     }
   ];
 

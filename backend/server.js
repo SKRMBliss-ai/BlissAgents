@@ -6,6 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { startBot, stopBot, approvePost } = require('./bot');
+const outreachAgent = require('./outreachAgent');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,7 +36,7 @@ require('dotenv').config();
 const { OpenAI } = require('openai');
 
 const openai = new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: process.env.GEMINI_API_KEY || 'not-set',
   baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
 });
 
@@ -232,6 +233,81 @@ Return ONLY a strictly formatted JSON object with the following keys:
     });
   } catch (error) {
     console.error("OpenAI Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- Outreach Agent Endpoints ---
+
+app.get('/api/outreach/prospects', (req, res) => {
+  res.json(outreachAgent.loadProspects());
+});
+
+app.post('/api/outreach/prospects', (req, res) => {
+  const prospects = outreachAgent.loadProspects();
+  const now = new Date().toISOString();
+  const prospect = {
+    id: Date.now().toString(),
+    businessName: '',
+    businessType: '',
+    website: '',
+    instagram: '',
+    contactPerson: '',
+    email: '',
+    whatsapp: '',
+    digitalGaps: [],
+    recommendedService: '',
+    draftMessage: '',
+    notes: '',
+    status: 'New',
+    createdAt: now,
+    lastContactDate: null,
+    followUpDate: null,
+    ...req.body,
+  };
+  prospects.push(prospect);
+  outreachAgent.saveProspects(prospects);
+  res.status(201).json(prospect);
+});
+
+app.put('/api/outreach/prospects/:id', (req, res) => {
+  const prospects = outreachAgent.loadProspects();
+  const idx = prospects.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Prospect not found' });
+  prospects[idx] = { ...prospects[idx], ...req.body, id: prospects[idx].id };
+  outreachAgent.saveProspects(prospects);
+  res.json(prospects[idx]);
+});
+
+app.delete('/api/outreach/prospects/:id', (req, res) => {
+  const prospects = outreachAgent.loadProspects();
+  const filtered = prospects.filter(p => p.id !== req.params.id);
+  outreachAgent.saveProspects(filtered);
+  res.json({ message: 'Deleted' });
+});
+
+app.post('/api/outreach/suggest-gaps', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  }
+  try {
+    const result = await outreachAgent.suggestGaps(openai, req.body);
+    res.json(result);
+  } catch (error) {
+    console.error('suggest-gaps error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/draft-message', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  }
+  try {
+    const message = await outreachAgent.draftMessage(openai, req.body);
+    res.json({ message });
+  } catch (error) {
+    console.error('draft-message error:', error);
     res.status(500).json({ error: error.message });
   }
 });
