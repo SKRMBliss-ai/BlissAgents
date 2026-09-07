@@ -54,6 +54,26 @@ const whatsappLink = (whatsapp, message) => {
   return `https://wa.me/${digits.replace(/^\+/, '')}${text}`;
 };
 
+// Places API only returns a generic "website" field, but many small businesses
+// list their Facebook/Instagram/YouTube page there instead of a real site —
+// detect that so it's labeled usefully rather than shown as a plain "Website".
+const detectLinkType = (url) => {
+  if (!url) return null;
+  const host = url.toLowerCase();
+  if (host.includes('facebook.com') || host.includes('fb.com')) return 'Facebook';
+  if (host.includes('instagram.com')) return 'Instagram';
+  if (host.includes('twitter.com') || host.includes('x.com')) return 'Twitter/X';
+  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'YouTube';
+  if (host.includes('linkedin.com')) return 'LinkedIn';
+  if (host.includes('behance.net')) return 'Behance';
+  return 'Website';
+};
+
+const googleSearchLink = (businessName, notes) => {
+  const location = (notes || '').split('·')[0]?.trim() || '';
+  return `https://www.google.com/search?q=${encodeURIComponent(`${businessName} ${location}`.trim())}`;
+};
+
 function OutreachAgent() {
   const [prospects, setProspects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -597,7 +617,7 @@ function OutreachAgent() {
           <div className="p-10 text-center text-gray-500">No prospects yet. Click "Add Prospect" to start.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="min-w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-700 text-left text-gray-400">
                   <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
@@ -799,8 +819,30 @@ function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMess
                       Sourced from web search — no phone/email available automatically. Look up their contact info (their profile/website) and paste it in below.
                     </div>
                   )}
+                  {!p.email && !p.whatsapp && !p.website && (
+                    <div
+                      className="text-xs text-blue-300 bg-blue-900/20 border border-blue-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <span>No contact info or website on file — search for their social media presence (Facebook/Instagram/X/YouTube) or website.</span>
+                      <a
+                        href={googleSearchLink(p.businessName, p.notes)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="flex-shrink-0 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all whitespace-nowrap"
+                      >
+                        Search Online
+                      </a>
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <InfoLine label="Website" value={p.website} />
+                    <div onClick={e => e.stopPropagation()}>
+                      <span className="text-gray-500">{detectLinkType(p.website) || 'Website'}: </span>
+                      {p.website ? (
+                        <a href={p.website} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">
+                          {p.website}
+                        </a>
+                      ) : <span className="text-gray-300">—</span>}
+                    </div>
                     <InfoLine label="Instagram" value={p.instagram} />
                     <div onClick={e => e.stopPropagation()}>
                       <label className="block text-xs text-gray-500 mb-1">Email</label>

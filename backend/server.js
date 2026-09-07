@@ -256,10 +256,46 @@ app.get('/api/outreach/prospects', (req, res) => {
   res.json(outreachAgent.loadProspects());
 });
 
-app.post('/api/outreach/prospects', (req, res) => {
+// Auto-drafts gap-suggestion + a full email for a freshly-found prospect, so it's
+// ready to review the moment it lands in the pipeline — no manual "Suggest Gaps"
+// / "Draft Email" clicks needed for the common case. Never sends anything; this
+// only prepares a draft, which is still reviewed/approved/sent by the user.
+const enrichProspect = async (prospect) => {
+  try {
+    const gaps = await outreachAgent.suggestGaps(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+    });
+    const email = await outreachAgent.draftEmail(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
+    });
+    return {
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
+      draftEmailSubject: email.subject, draftEmailBody: email.body,
+    };
+  } catch (error) {
+    console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
+
+const enrichProspectsConcurrently = async (prospects, concurrency = 5) => {
+  const results = new Array(prospects.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, prospects.length) }, async () => {
+    while (next < prospects.length) {
+      const i = next++;
+      results[i] = await enrichProspect(prospects[i]);
+    }
+  });
+  await Promise.all(workers);
+  return prospects.map((p, i) => ({ ...p, ...results[i] }));
+};
+
+app.post('/api/outreach/prospects', async (req, res) => {
   const prospects = outreachAgent.loadProspects();
   const now = new Date().toISOString();
-  const prospect = {
+  let prospect = {
     id: Date.now().toString(),
     businessName: '',
     businessType: '',
@@ -278,6 +314,10 @@ app.post('/api/outreach/prospects', (req, res) => {
     followUpDate: null,
     ...req.body,
   };
+  if (process.env.GEMINI_API_KEY) {
+    const enrichment = await enrichProspect(prospect);
+    prospect = { ...prospect, ...enrichment };
+  }
   prospects.push(prospect);
   outreachAgent.saveProspects(prospects);
   res.status(201).json(prospect);
@@ -417,7 +457,8 @@ const runDiscoveryAndSave = async () => {
       followUpDate: null,
       ...p,
     }));
-    outreachAgent.saveProspects([...withDefaults, ...existingProspects]);
+    const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
+    outreachAgent.saveProspects([...enriched, ...existingProspects]);
   }
 
   prospectFinder.saveSettings({ ...settings, lastRunDate: new Date().toISOString().slice(0, 10) });
@@ -467,7 +508,8 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
         createdAt: now, lastContactDate: null, followUpDate: null,
         ...p,
       }));
-      outreachAgent.saveProspects([...withDefaults, ...existingProspects]);
+      const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
+      outreachAgent.saveProspects([...enriched, ...existingProspects]);
     }
     res.json({ found });
   } catch (error) {

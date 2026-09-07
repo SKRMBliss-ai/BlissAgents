@@ -17,12 +17,50 @@ const API_SECRETS = [
   'GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS',
   'BlissAgentCustomSearchEng', 'GOOGLE_CUSTOM_SEARCH_CX',
 ];
-const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY'];
+const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY', 'GEMINI_API_KEY'];
 
 const getOpenAI = () => new OpenAI({
   apiKey: process.env.GEMINI_API_KEY || 'not-set',
   baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
 });
+
+// Auto-drafts gap-suggestion + a full email for a freshly-found prospect, so it's
+// ready to review the moment it lands in the pipeline — no manual "Suggest Gaps"
+// / "Draft Email" clicks needed for the common case. Never sends anything; this
+// only prepares a draft, which is still reviewed/approved/sent by the user.
+const enrichProspect = async (openai, prospect) => {
+  try {
+    const gaps = await aiHelpers.suggestGaps(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+    });
+    const email = await aiHelpers.draftEmail(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
+    });
+    return {
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
+      draftEmailSubject: email.subject, draftEmailBody: email.body,
+    };
+  } catch (error) {
+    console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
+
+// Enriches a batch with limited concurrency so a big discovery run (dozens of
+// prospects) doesn't serialize into minutes of sequential AI calls.
+const enrichProspectsConcurrently = async (openai, prospects, concurrency = 5) => {
+  const results = new Array(prospects.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, prospects.length) }, async () => {
+    while (next < prospects.length) {
+      const i = next++;
+      results[i] = await enrichProspect(openai, prospects[i]);
+    }
+  });
+  await Promise.all(workers);
+  return prospects.map((p, i) => ({ ...p, ...results[i] }));
+};
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -33,7 +71,11 @@ app.get('/api/outreach/prospects', async (req, res) => {
 });
 
 app.post('/api/outreach/prospects', async (req, res) => {
-  const prospect = await store.createProspect(req.body);
+  let prospect = await store.createProspect(req.body);
+  if (process.env.GEMINI_API_KEY) {
+    const enrichment = await enrichProspect(getOpenAI(), prospect);
+    if (Object.keys(enrichment).length) prospect = await store.updateProspect(prospect.id, enrichment);
+  }
   res.status(201).json(prospect);
 });
 
@@ -137,7 +179,10 @@ const runDiscoveryAndSave = async () => {
   const existingProspects = await store.loadProspects();
 
   const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings });
-  if (found.length > 0) await store.bulkAddProspects(found);
+  if (found.length > 0) {
+    const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
+    await store.bulkAddProspects(enriched);
+  }
 
   await store.saveSettings({ ...settings, lastRunDate: new Date().toISOString().slice(0, 10) });
   return found;
@@ -182,7 +227,10 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
       cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
       existingProspects, cities, freelancerTypes, countPerType: countPerType || 5,
     });
-    if (found.length > 0) await store.bulkAddProspects(found);
+    if (found.length > 0) {
+      const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
+      await store.bulkAddProspects(enriched);
+    }
     res.json({ found });
   } catch (error) {
     console.error('find-freelancers error:', error);
@@ -190,10 +238,10 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
   }
 });
 
-exports.api = onRequest({ secrets: API_SECRETS, cors: true }, app);
+exports.api = onRequest({ secrets: API_SECRETS, cors: true, timeoutSeconds: 300 }, app);
 
 exports.dailyProspectDiscovery = onSchedule(
-  { schedule: 'every day 08:00', timeZone: 'Asia/Kolkata', secrets: DISCOVERY_SECRETS },
+  { schedule: 'every day 08:00', timeZone: 'Asia/Kolkata', secrets: DISCOVERY_SECRETS, timeoutSeconds: 540 },
   async () => {
     try {
       const found = await runDiscoveryAndSave();
