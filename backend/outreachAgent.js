@@ -19,14 +19,14 @@ const saveProspects = (prospects) => {
 
 const STATUSES = ['New', 'Contacted', 'No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'];
 
-const WHITE_LABEL_APP_TYPES = ['Wellness Business', 'Coaching Institute', 'Consultant'];
+const WHITE_LABEL_APP_TYPES = ['Wellness Business', 'Coaching Institute', 'Consultant', 'Laughter Yoga', 'Yoga Studio', 'Counsellor/Therapist'];
 
 const whiteLabelAppsBlock = `
 The consultant also has two ready-made apps that can be rebranded (their own name/logo, customized content) for an individual coach/instructor/practitioner at low cost instead of building something from scratch:
-- "Laughter Hub" — a community app for daily laughter yoga sessions and group joy practice.
-- "Mind Gym" — a daily presence/mindfulness training app (subscription-style, guided daily practice).
+- "Laughter Hub" — a community app for daily laughter yoga sessions and group joy practice. ONLY recommend this if the business is specifically a laughter yoga instructor, laughter club, or laughter therapy practice (name/notes explicitly mention laughter yoga/laughter club/laughter therapy) — not general wellness or fitness.
+- "Mind Gym" — a daily presence/mindfulness training app (subscription-style, guided daily practice). Recommend this for meditation/mindfulness coaches, presence/spiritual coaches, or general wellness/life coaches — NOT for laughter yoga specifically.
 
-If this business is (or is run by) an individual coach, instructor, or practitioner whose work fits either app's theme (laughter yoga, mindfulness/meditation coaching, presence/spiritual coaching, general wellness coaching), consider recommending the matching one BY NAME as the "recommendedService" instead of a generic website/chatbot fix — e.g. "White-label Mind Gym app" or "White-label Laughter Hub app". Only do this if it's a genuine fit; otherwise give the usual generic recommendation.
+If this business is (or is run by) an individual coach, instructor, or practitioner whose work genuinely fits one of these two narrow categories, recommend the matching one BY NAME as the "recommendedService" instead of a generic website/chatbot fix — e.g. "White-label Mind Gym app" or "White-label Laughter Hub app". Do not recommend Laughter Hub just because the business is broadly "wellness" — it must be laughter-yoga-specific. If neither is a genuine fit, give the usual generic recommendation instead.
 `;
 
 const suggestGapsPrompt = ({ businessName, businessType, notes }) => `
@@ -65,6 +65,47 @@ Rules:
 Return ONLY the message text, nothing else.
 `;
 
+const SENDER_PERSONA = `
+Sender: Shruti, based in Bangalore, 20+ years of experience in software, digital products and technology. Recently started an independent digital services business helping small businesses and individual practitioners with:
+- Website & web app development
+- AI chatbots & AI enhancements
+- Professional photos, videos & social media content
+- YouTube & digital content
+- E-books, brochures & creative materials
+- Customized songs/content for a brand
+
+Portfolio links to include at the end:
+- SKRM Bliss AI – MindGym: https://www.skrmblissai.in/mindgym
+- Personal Portfolio – TwinSouls: https://www.skrmblissai.in/twinsouls
+`;
+
+const draftEmailPrompt = ({ businessName, businessType, contactPerson, digitalGaps, recommendedService }) => `
+You write personalized cold outreach emails on behalf of the sender described below, to small businesses and individual practitioners about digital services.
+
+${SENDER_PERSONA}
+
+Write an email for:
+Business: ${businessName} (${businessType})
+Contact person: ${contactPerson || 'the owner'}
+Likely digital gaps noticed: ${(digitalGaps || []).join(', ') || 'general online presence'}
+Service to lead with: ${recommendedService || 'digital presence improvements'}
+
+Follow this exact structure and tone (based on a real template the sender uses):
+1. Open by naming the business and something genuinely positive/specific about it (infer something plausible from the business type — do not invent fake stats or claims).
+2. A short "I'm Shruti from Bangalore, with 20+ years of experience..." intro paragraph, adapted naturally to this recipient.
+3. A bullet list of the sender's services (from the persona above) — trim it to 3-5 bullets most relevant to this business's gaps, don't always list all six.
+4. A one-line statement of the goal in bold, e.g. "**help you showcase your property better, attract more relevant guests, improve enquiries and build a stronger online presence.**" — adapt the specifics to this business, not always "property/guests".
+5. A soft, low-pressure line offering to share a few specific ideas for THIS business by name — no pressure, just a conversation.
+6. Sign off "Warm regards," then "**Shruti | Bangalore**".
+7. A "My work:" section listing the two portfolio links as markdown links.
+- If the service to lead with is a named app ("Mind Gym" or "Laughter Hub"), fold that into the pitch naturally as "your own branded version of an app we've already built" instead of generic website language.
+- Do not mention price, cost, or any number.
+- Keep it warm and human, not corporate. One emoji max (e.g. 😊), only if it fits naturally.
+- Use markdown: **bold** for emphasis and [text](url) for links, since this renders as HTML email.
+
+Return ONLY a JSON object: { "subject": "...", "body": "..." } where body is the full email in markdown as described above (no need to repeat the subject inside the body).
+`;
+
 const extractJson = (text) => {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('No JSON object found in AI response');
@@ -95,10 +136,23 @@ const draftMessage = async (openai, { businessName, businessType, contactPerson,
   return completion.choices[0].message.content.trim();
 };
 
+const draftEmail = async (openai, { businessName, businessType, contactPerson, digitalGaps, recommendedService }) => {
+  const completion = await openai.chat.completions.create({
+    model: 'gemini-2.5-flash',
+    messages: [
+      { role: 'system', content: 'You write warm, personalized cold outreach emails. Return only valid JSON, no markdown fences around the JSON itself (markdown IS allowed inside the body field).' },
+      { role: 'user', content: draftEmailPrompt({ businessName, businessType, contactPerson, digitalGaps, recommendedService }) },
+    ],
+    temperature: 0.8,
+  });
+  return extractJson(completion.choices[0].message.content);
+};
+
 module.exports = {
   loadProspects,
   saveProspects,
   suggestGaps,
   draftMessage,
+  draftEmail,
   STATUSES,
 };

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
-  Send, Repeat, Mail, Phone, Compass,
+  Send, Repeat, Mail, Phone, Compass, ArrowUpDown,
 } from 'lucide-react';
 
 const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/outreach';
@@ -11,7 +11,8 @@ const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/
 const STATUSES = ['New', 'Contacted', 'No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'];
 const BUSINESS_TYPES = [
   'Hotel/Homestay', 'Restaurant/Café', 'Coaching Institute', 'Wellness Business',
-  'Clinic', 'Small Manufacturer', 'Real Estate', 'Consultant', 'Local Retailer', 'Startup', 'Other',
+  'Clinic', 'Small Manufacturer', 'Real Estate', 'Consultant', 'Local Retailer', 'Startup',
+  'Laughter Yoga', 'Yoga Studio', 'Counsellor/Therapist', 'Art/Design Studio', 'Other',
 ];
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -58,6 +59,8 @@ function OutreachAgent() {
   const [findingProspects, setFindingProspects] = useState(false);
   const [findError, setFindError] = useState('');
   const [findResultCount, setFindResultCount] = useState(null);
+  const [sortBy, setSortBy] = useState('createdAt');
+  const [sortDir, setSortDir] = useState('desc');
 
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
@@ -179,6 +182,47 @@ function OutreachAgent() {
     }
   };
 
+  const handleDraftEmail = async (p) => {
+    setBusyId(p.id + '-email');
+    try {
+      const res = await fetch(`${API}/draft-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessName: p.businessName, businessType: p.businessType, contactPerson: p.contactPerson,
+          digitalGaps: p.digitalGaps, recommendedService: p.recommendedService,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await updateProspect(p.id, { draftEmailSubject: data.subject, draftEmailBody: data.body });
+    } catch (e) {
+      alert('Could not draft email: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleSendEmail = async (p) => {
+    if (!p.email) return alert('This prospect has no email address.');
+    if (!confirm(`Send this email to ${p.email} now?`)) return;
+    setBusyId(p.id + '-send');
+    try {
+      const res = await fetch(`${API}/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prospectId: p.id, subject: p.draftEmailSubject, body: p.draftEmailBody }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setProspects(prev => prev.map(x => (x.id === p.id ? data.prospect : x)));
+    } catch (e) {
+      alert('Could not send email: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const markContacted = (p) => updateProspect(p.id, {
     status: 'Contacted', lastContactDate: todayStr(), followUpDate: addDays(todayStr(), 3),
   });
@@ -208,6 +252,26 @@ function OutreachAgent() {
     ).length;
     return { total, reachedOut, followedUp };
   }, [prospects]);
+
+  const sortedProspects = useMemo(() => {
+    const sorted = [...prospects].sort((a, b) => {
+      const av = a[sortBy] || '';
+      const bv = b[sortBy] || '';
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [prospects, sortBy, sortDir]);
+
+  const toggleSort = (field) => {
+    if (sortBy === field) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(field);
+      setSortDir('asc');
+    }
+  };
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
@@ -344,22 +408,41 @@ function OutreachAgent() {
         ) : prospects.length === 0 ? (
           <div className="p-10 text-center text-gray-500">No prospects yet. Click "Add Prospect" to start.</div>
         ) : (
-          <div className="divide-y divide-gray-700">
-            {prospects.map(p => (
-              <ProspectRow
-                key={p.id}
-                p={p}
-                expanded={expandedId === p.id}
-                onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
-                busyId={busyId}
-                onSuggestGaps={() => handleSuggestGaps(p)}
-                onDraftMessage={() => handleDraftMessage(p)}
-                onMarkContacted={() => markContacted(p)}
-                onSetStatus={(s) => setStatus(p, s)}
-                onDelete={() => deleteProspect(p.id)}
-                onFieldChange={(field, value) => updateProspect(p.id, { [field]: value })}
-              />
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left text-gray-400">
+                  <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <SortableTh field="businessType" label="Type" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <SortableTh field="status" label="Status" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <th className="px-4 py-3 font-medium">Contact</th>
+                  <th className="px-4 py-3 font-medium">Email</th>
+                  <th className="px-4 py-3 font-medium">WhatsApp</th>
+                  <SortableTh field="lastContactDate" label="Last Contact" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <SortableTh field="followUpDate" label="Next Follow-up" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                  <th className="px-4 py-3 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedProspects.map(p => (
+                  <ProspectRow
+                    key={p.id}
+                    p={p}
+                    expanded={expandedId === p.id}
+                    onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
+                    busyId={busyId}
+                    onSuggestGaps={() => handleSuggestGaps(p)}
+                    onDraftMessage={() => handleDraftMessage(p)}
+                    onDraftEmail={() => handleDraftEmail(p)}
+                    onSendEmail={() => handleSendEmail(p)}
+                    onMarkContacted={() => markContacted(p)}
+                    onSetStatus={(s) => setStatus(p, s)}
+                    onDelete={() => deleteProspect(p.id)}
+                    onFieldChange={(field, value) => updateProspect(p.id, { [field]: value })}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -432,6 +515,22 @@ function StatCard({ icon, value, label }) {
   );
 }
 
+function SortableTh({ field, label, sortBy, sortDir, onSort }) {
+  const active = sortBy === field;
+  return (
+    <th
+      onClick={() => onSort(field)}
+      className={`px-4 py-3 font-medium cursor-pointer select-none hover:text-white transition-colors ${active ? 'text-white' : ''}`}
+    >
+      <span className="flex items-center space-x-1">
+        <span>{label}</span>
+        <ArrowUpDown className={`w-3 h-3 ${active ? 'opacity-100' : 'opacity-30'}`} />
+        {active && <span className="text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>}
+      </span>
+    </th>
+  );
+}
+
 function DigestCard({ icon, label, color, children }) {
   return (
     <div className={`rounded-xl border p-4 space-y-2 ${color}`}>
@@ -454,137 +553,172 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
-  const day = daysSince(p.lastContactDate || p.createdAt);
+function ProspectRow({ p, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
   return (
-    <div>
-      <div className="flex items-center justify-between p-5 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
-        <div className="flex items-center space-x-4 flex-1 min-w-0">
-          <button className="text-gray-400">{expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</button>
-          <div className="min-w-0">
-            <div className="font-semibold text-white truncate">{p.businessName}</div>
-            <div className="text-xs text-gray-500">{p.businessType} · Day {day}</div>
+    <>
+      <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
+        <td className="px-4 py-3">
+          <div className="flex items-center space-x-2 min-w-0">
+            {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+            <span className="font-medium text-white truncate">{p.businessName}</span>
           </div>
-        </div>
-        <div className="flex items-center space-x-3">
-          <span className={`px-3 py-1 rounded-full text-xs font-bold ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
-          {p.followUpDate && (
-            <span className="text-xs text-gray-500 hidden sm:inline">Next: {p.followUpDate}</span>
-          )}
+        </td>
+        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.businessType}</td>
+        <td className="px-4 py-3">
+          <span className={`px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
+        </td>
+        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.contactPerson || '—'}</td>
+        <td className="px-4 py-3 text-gray-400 truncate max-w-[160px]">{p.email || '—'}</td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {p.whatsapp ? (
+            <a
+              href={whatsappLink(p.whatsapp, p.draftMessage)}
+              target="_blank" rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="text-green-400 hover:text-green-300 underline"
+            >
+              {p.whatsapp}
+            </a>
+          ) : <span className="text-gray-500">—</span>}
+        </td>
+        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.lastContactDate || '—'}</td>
+        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.followUpDate || '—'}</td>
+        <td className="px-4 py-3">
           <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-gray-500 hover:text-red-400">
             <Trash2 className="w-4 h-4" />
           </button>
-        </div>
-      </div>
-
+        </td>
+      </tr>
       <AnimatePresence>
         {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="p-5 pt-0 space-y-4 bg-gray-900/40">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                <InfoLine label="Website" value={p.website} />
-                <InfoLine label="Instagram" value={p.instagram} />
-                <InfoLine label="Contact" value={p.contactPerson} />
-                <InfoLine label="Email" value={p.email} />
-                <div>
-                  <span className="text-gray-500">WhatsApp: </span>
-                  {p.whatsapp ? (
-                    <a
-                      href={whatsappLink(p.whatsapp, p.draftMessage)}
-                      target="_blank" rel="noopener noreferrer"
-                      onClick={e => e.stopPropagation()}
-                      className="text-green-400 hover:text-green-300 underline"
+          <tr>
+            <td colSpan={9} className="p-0 border-b border-gray-700">
+              <motion.div
+                initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="p-5 space-y-4 bg-gray-900/40">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <InfoLine label="Website" value={p.website} />
+                    <InfoLine label="Instagram" value={p.instagram} />
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={onSuggestGaps}
+                      disabled={busyId === p.id + '-gaps'}
+                      className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
                     >
-                      {p.whatsapp}
-                    </a>
-                  ) : <span className="text-gray-300">—</span>}
-                </div>
-                <InfoLine label="Last Contact" value={p.lastContactDate} />
-              </div>
+                      {busyId === p.id + '-gaps' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                      <span>Suggest Digital Gaps</span>
+                    </button>
+                    <button
+                      onClick={onDraftMessage}
+                      disabled={busyId === p.id + '-msg'}
+                      className="flex items-center space-x-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                    >
+                      {busyId === p.id + '-msg' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
+                      <span>Draft WhatsApp Message</span>
+                    </button>
+                    <button
+                      onClick={onDraftEmail}
+                      disabled={busyId === p.id + '-email'}
+                      className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                    >
+                      {busyId === p.id + '-email' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                      <span>Draft Email</span>
+                    </button>
+                    {p.whatsapp && p.draftMessage && (
+                      <a
+                        href={whatsappLink(p.whatsapp, p.draftMessage)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
+                      >
+                        <Phone className="w-4 h-4" />
+                        <span>Open in WhatsApp</span>
+                      </a>
+                    )}
+                    {p.status === 'New' && (
+                      <button onClick={onMarkContacted} className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all">
+                        Mark Contacted
+                      </button>
+                    )}
+                    <select
+                      className="bg-gray-800 border border-gray-700 rounded-lg text-sm text-white py-2 px-3 outline-none"
+                      value={p.status}
+                      onChange={e => onSetStatus(e.target.value)}
+                    >
+                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={onSuggestGaps}
-                  disabled={busyId === p.id + '-gaps'}
-                  className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                >
-                  {busyId === p.id + '-gaps' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                  <span>Suggest Digital Gaps</span>
-                </button>
-                <button
-                  onClick={onDraftMessage}
-                  disabled={busyId === p.id + '-msg'}
-                  className="flex items-center space-x-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                >
-                  {busyId === p.id + '-msg' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-                  <span>Draft Message</span>
-                </button>
-                {p.whatsapp && p.draftMessage && (
-                  <a
-                    href={whatsappLink(p.whatsapp, p.draftMessage)}
-                    target="_blank" rel="noopener noreferrer"
-                    className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                  >
-                    <Phone className="w-4 h-4" />
-                    <span>Open in WhatsApp</span>
-                  </a>
-                )}
-                {p.status === 'New' && (
-                  <button onClick={onMarkContacted} className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all">
-                    Mark Contacted
-                  </button>
-                )}
-                <select
-                  className="bg-gray-800 border border-gray-700 rounded-lg text-sm text-white py-2 px-3 outline-none"
-                  value={p.status}
-                  onChange={e => onSetStatus(e.target.value)}
-                >
-                  {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-
-              {p.digitalGaps?.length > 0 && (
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Possible Opportunities</div>
-                  <ul className="list-disc list-inside text-sm text-gray-300 space-y-0.5">
-                    {p.digitalGaps.map((g, i) => <li key={i}>{g}</li>)}
-                  </ul>
-                  {p.recommendedService && (
-                    <div className="text-sm text-emerald-400 mt-2">Recommended: {p.recommendedService}</div>
+                  {p.digitalGaps?.length > 0 && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Possible Opportunities</div>
+                      <ul className="list-disc list-inside text-sm text-gray-300 space-y-0.5">
+                        {p.digitalGaps.map((g, i) => <li key={i}>{g}</li>)}
+                      </ul>
+                      {p.recommendedService && (
+                        <div className="text-sm text-emerald-400 mt-2">Recommended: {p.recommendedService}</div>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
 
-              {p.draftMessage !== undefined && p.draftMessage !== '' && (
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draft Message (edit before sending)</div>
-                  <textarea
-                    className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
-                    rows={4}
-                    value={p.draftMessage}
-                    onChange={e => onFieldChange('draftMessage', e.target.value)}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Copy this into WhatsApp/email yourself, then click "Mark Contacted".</p>
-                </div>
-              )}
+                  {p.draftMessage !== undefined && p.draftMessage !== '' && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draft WhatsApp Message (edit before sending)</div>
+                      <textarea
+                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
+                        rows={4}
+                        value={p.draftMessage}
+                        onChange={e => onFieldChange('draftMessage', e.target.value)}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Copy this into WhatsApp yourself, then click "Mark Contacted".</p>
+                    </div>
+                  )}
 
-              <div>
-                <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Notes</div>
-                <textarea
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
-                  rows={2}
-                  value={p.notes || ''}
-                  onChange={e => onFieldChange('notes', e.target.value)}
-                />
-              </div>
-            </div>
-          </motion.div>
+                  {p.draftEmailBody !== undefined && p.draftEmailBody !== '' && (
+                    <div className="space-y-2">
+                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draft Email (edit before sending)</div>
+                      <input
+                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none"
+                        value={p.draftEmailSubject || ''}
+                        onChange={e => onFieldChange('draftEmailSubject', e.target.value)}
+                        placeholder="Subject"
+                      />
+                      <textarea
+                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none font-mono"
+                        rows={8}
+                        value={p.draftEmailBody}
+                        onChange={e => onFieldChange('draftEmailBody', e.target.value)}
+                      />
+                      <button
+                        onClick={onSendEmail}
+                        disabled={!p.email || busyId === p.id + '-send'}
+                        className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
+                      >
+                        {busyId === p.id + '-send' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                        <span>Send Email{p.email ? ` to ${p.email}` : ' (no email on file)'}</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Notes</div>
+                    <textarea
+                      className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
+                      rows={2}
+                      value={p.notes || ''}
+                      onChange={e => onFieldChange('notes', e.target.value)}
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            </td>
+          </tr>
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
 }
 

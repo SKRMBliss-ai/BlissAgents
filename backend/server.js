@@ -8,6 +8,7 @@ const fs = require('fs');
 const { startBot, stopBot, approvePost } = require('./bot');
 const outreachAgent = require('./outreachAgent');
 const prospectFinder = require('./prospectFinder');
+const emailSender = require('./emailSender');
 const cron = require('node-cron');
 
 const app = express();
@@ -319,6 +320,50 @@ app.post('/api/outreach/draft-message', async (req, res) => {
     res.json({ message });
   } catch (error) {
     console.error('draft-message error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/draft-email', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  }
+  try {
+    const email = await outreachAgent.draftEmail(openai, req.body);
+    res.json(email);
+  } catch (error) {
+    console.error('draft-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/send-email', async (req, res) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return res.status(500).json({ error: 'EMAIL_USER / EMAIL_PASS is not set in backend/.env' });
+  }
+  const { prospectId, subject, body } = req.body;
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const prospect = prospects.find(p => p.id === prospectId);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+    if (!prospect.email) return res.status(400).json({ error: 'Prospect has no email address' });
+
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const followUpDate = new Date();
+    followUpDate.setDate(followUpDate.getDate() + 3);
+    Object.assign(prospect, {
+      status: prospect.status === 'New' ? 'Contacted' : prospect.status,
+      lastContactDate: today,
+      followUpDate: followUpDate.toISOString().slice(0, 10),
+      draftEmailSubject: subject,
+      draftEmailBody: body,
+    });
+    outreachAgent.saveProspects(prospects);
+    res.json({ message: 'Email sent', prospect });
+  } catch (error) {
+    console.error('send-email error:', error);
     res.status(500).json({ error: error.message });
   }
 });

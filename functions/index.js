@@ -10,8 +10,10 @@ admin.initializeApp();
 const store = require('./outreachStore');
 const prospectFinder = require('./prospectFinder');
 const aiHelpers = require('./aiHelpers');
+const emailSender = require('./emailSender');
 
-const SECRETS = ['GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY'];
+const API_SECRETS = ['GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS'];
+const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY'];
 
 const getOpenAI = () => new OpenAI({
   apiKey: process.env.GEMINI_API_KEY || 'not-set',
@@ -63,6 +65,46 @@ app.post('/api/outreach/draft-message', async (req, res) => {
   }
 });
 
+app.post('/api/outreach/draft-email', async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  try {
+    const email = await aiHelpers.draftEmail(getOpenAI(), req.body);
+    res.json(email);
+  } catch (error) {
+    console.error('draft-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/outreach/send-email', async (req, res) => {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return res.status(500).json({ error: 'EMAIL_USER / EMAIL_PASS secrets are not set' });
+  }
+  const { prospectId, subject, body } = req.body;
+  try {
+    const prospect = await store.getProspect(prospectId);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+    if (!prospect.email) return res.status(400).json({ error: 'Prospect has no email address' });
+
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const followUpDate = new Date();
+    followUpDate.setDate(followUpDate.getDate() + 3);
+    const updated = await store.updateProspect(prospectId, {
+      status: prospect.status === 'New' ? 'Contacted' : prospect.status,
+      lastContactDate: today,
+      followUpDate: followUpDate.toISOString().slice(0, 10),
+      draftEmailSubject: subject,
+      draftEmailBody: body,
+    });
+    res.json({ message: 'Email sent', prospect: updated });
+  } catch (error) {
+    console.error('send-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/outreach/settings', async (req, res) => {
   res.json(await store.loadSettings());
 });
@@ -103,10 +145,10 @@ app.post('/api/outreach/find-prospects', async (req, res) => {
   }
 });
 
-exports.api = onRequest({ secrets: SECRETS, cors: true }, app);
+exports.api = onRequest({ secrets: API_SECRETS, cors: true }, app);
 
 exports.dailyProspectDiscovery = onSchedule(
-  { schedule: 'every day 08:00', timeZone: 'Asia/Kolkata', secrets: SECRETS },
+  { schedule: 'every day 08:00', timeZone: 'Asia/Kolkata', secrets: DISCOVERY_SECRETS },
   async () => {
     try {
       const found = await runDiscoveryAndSave();
