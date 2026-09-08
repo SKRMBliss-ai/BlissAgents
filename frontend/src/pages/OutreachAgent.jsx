@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
@@ -224,6 +224,38 @@ function OutreachAgent() {
     const updated = await res.json();
     setProspects(prev => prev.map(p => (p.id === id ? updated : p)));
     return updated;
+  };
+
+  // Typing into a text field must never wait on the network — awaiting a PUT
+  // per keystroke and then replacing state with the server's response caused
+  // the textarea value to reset mid-edit, snapping the cursor to the end.
+  // Local edits apply instantly; the debounce ref below persists them shortly
+  // after typing pauses, without touching the rest of the prospect's state.
+  const fieldSyncTimers = useRef({});
+
+  const updateProspectLocal = (id, patch) => {
+    setProspects(prev => prev.map(p => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
+  const commitFieldDebounced = (id, field, value) => {
+    const key = `${id}:${field}`;
+    clearTimeout(fieldSyncTimers.current[key]);
+    fieldSyncTimers.current[key] = setTimeout(async () => {
+      try {
+        await fetch(`${API}/prospects/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [field]: value }),
+        });
+      } catch (e) {
+        console.error('Could not save field:', e);
+      }
+    }, 600);
+  };
+
+  const handleFieldChange = (id, field, value) => {
+    updateProspectLocal(id, { [field]: value });
+    commitFieldDebounced(id, field, value);
   };
 
   const addProspect = async () => {
@@ -906,7 +938,7 @@ function OutreachAgent() {
                     onMarkContacted={() => markContacted(p)}
                     onSetStatus={(s) => setStatus(p, s)}
                     onDelete={() => deleteProspect(p.id)}
-                    onFieldChange={(field, value) => updateProspect(p.id, { [field]: value })}
+                    onFieldChange={(field, value) => handleFieldChange(p.id, field, value)}
                   />
                 ))}
               </tbody>

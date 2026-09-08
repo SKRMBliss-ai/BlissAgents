@@ -36,7 +36,7 @@ const enrichProspect = async (openai, prospect) => {
     });
     const draftArgs = {
       businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
-      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
     };
     const [email, whatsappMessage] = await Promise.all([
       aiHelpers.draftEmail(openai, draftArgs),
