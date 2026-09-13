@@ -5,25 +5,30 @@ const express = require('express');
 const cors = require('cors');
 const { OpenAI } = require('openai');
 
-admin.initializeApp();
+if (!admin.apps.length) admin.initializeApp();
 
 const store = require('./outreachStore');
 const prospectFinder = require('./prospectFinder');
 const freelancerFinder = require('./freelancerFinder');
+const directoryImporter = require('./directoryImporter');
 const aiHelpers = require('./aiHelpers');
 const emailSender = require('./emailSender');
 const emailScraper = require('./emailScraper');
 
 const API_SECRETS = [
   'GEMINI_API_KEY', 'GOOGLE_PLACES_API_KEY', 'EMAIL_USER', 'EMAIL_PASS',
-  'BlissAgentCustomSearchEng', 'GOOGLE_CUSTOM_SEARCH_CX',
+  'BLISS_AGENT_CUSTOM_SEARCH_ENG', 'GOOGLE_CUSTOM_SEARCH_CX', 'GROQ_API_KEY',
 ];
-const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY', 'GEMINI_API_KEY'];
+const DISCOVERY_SECRETS = ['GOOGLE_PLACES_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY'];
+const HAS_AI_KEY = process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY;
 
-const getOpenAI = () => new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY || 'not-set',
-  baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-});
+// Groq's free tier (Llama models) has much higher rate limits than Gemini's
+// free tier, so it's preferred when a GROQ_API_KEY secret is set — same
+// OpenAI-compatible client, just a different base URL/key. Falls back to
+// Gemini if no Groq key is configured.
+const getOpenAI = () => process.env.GROQ_API_KEY
+  ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: 'https://api.groq.com/openai/v1' })
+  : new OpenAI({ apiKey: process.env.GEMINI_API_KEY || 'not-set', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/' });
 
 // Auto-drafts gap-suggestion + a full email for a freshly-found prospect, so it's
 // ready to review the moment it lands in the pipeline — no manual "Suggest Gaps"
@@ -31,12 +36,18 @@ const getOpenAI = () => new OpenAI({
 // only prepares a draft, which is still reviewed/approved/sent by the user.
 const enrichProspect = async (openai, prospect) => {
   try {
+    const research = prospect.website
+      ? await aiHelpers.researchProspect(openai, { website: prospect.website, businessType: prospect.businessType })
+      : await aiHelpers.researchProspect(openai, { businessType: prospect.businessType });
     const gaps = await aiHelpers.suggestGaps(openai, {
       businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+      research: research?.summary,
     });
     const draftArgs = {
       businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
+      research: research?.summary,
+      mindGymAppPotential: gaps.mindGymAppPotential, mindGymAppReason: gaps.mindGymAppReason, mindGymAppProduct: gaps.mindGymAppProduct, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason,
     };
     const [email, whatsappMessage] = await Promise.all([
       aiHelpers.draftEmail(openai, draftArgs),
@@ -46,6 +57,14 @@ const enrichProspect = async (openai, prospect) => {
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
       draftEmailSubject: email.subject, draftEmailBody: email.body,
       draftMessage: whatsappMessage,
+      research: research?.summary || null,
+      researchConfidence: research?.confidence || null,
+      researchedAt: research ? new Date().toISOString() : null,
+      mindGymAppPotential: gaps.mindGymAppPotential ?? null,
+      mindGymAppProduct: gaps.mindGymAppProduct || null,
+      feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit ?? null,
+      feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason || null,
+      mindGymAppReason: gaps.mindGymAppReason || null,
     };
   } catch (error) {
     console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
@@ -78,7 +97,7 @@ app.get('/api/outreach/prospects', async (req, res) => {
 
 app.post('/api/outreach/prospects', async (req, res) => {
   let prospect = await store.createProspect(req.body);
-  if (process.env.GEMINI_API_KEY) {
+  if (HAS_AI_KEY) {
     const enrichment = await enrichProspect(getOpenAI(), prospect);
     if (Object.keys(enrichment).length) prospect = await store.updateProspect(prospect.id, enrichment);
   }
@@ -96,8 +115,55 @@ app.delete('/api/outreach/prospects/:id', async (req, res) => {
   res.json({ message: 'Deleted' });
 });
 
+app.post('/api/outreach/prospects/:id/research', async (req, res) => {
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
+  const prospects = await store.loadProspects();
+  const prospect = prospects.find(p => p.id === req.params.id);
+  if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+  try {
+    const openai = getOpenAI();
+    const research = await aiHelpers.researchProspect(openai, { website: prospect.website, businessType: prospect.businessType });
+    if (!research) return res.status(422).json({ error: 'Could not research this prospect' });
+
+    const gaps = await aiHelpers.suggestGaps(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+      research: research.summary,
+    });
+    const draftArgs = {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
+      research: research.summary,
+      mindGymAppPotential: gaps.mindGymAppPotential, mindGymAppReason: gaps.mindGymAppReason, mindGymAppProduct: gaps.mindGymAppProduct, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason,
+    };
+    const [email, whatsappMessage] = await Promise.all([
+      aiHelpers.draftEmail(openai, draftArgs),
+      aiHelpers.draftMessage(openai, draftArgs),
+    ]);
+
+    const updated = await store.updateProspect(prospect.id, {
+      research: research.summary,
+      researchConfidence: research.confidence,
+      researchedAt: new Date().toISOString(),
+      digitalGaps: gaps.digitalGaps,
+      recommendedService: gaps.recommendedService,
+      draftEmailSubject: email.subject,
+      draftEmailBody: email.body,
+      draftMessage: whatsappMessage,
+      mindGymAppPotential: gaps.mindGymAppPotential ?? null,
+      mindGymAppProduct: gaps.mindGymAppProduct || null,
+      mindGymAppReason: gaps.mindGymAppReason || null,
+      feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit ?? null,
+      feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason || null,
+    });
+    res.json(updated);
+  } catch (error) {
+    console.error('research error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/outreach/suggest-gaps', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
   try {
     res.json(await aiHelpers.suggestGaps(getOpenAI(), req.body));
   } catch (error) {
@@ -107,7 +173,7 @@ app.post('/api/outreach/suggest-gaps', async (req, res) => {
 });
 
 app.post('/api/outreach/draft-message', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
   try {
     const message = await aiHelpers.draftMessage(getOpenAI(), req.body);
     res.json({ message });
@@ -118,7 +184,7 @@ app.post('/api/outreach/draft-message', async (req, res) => {
 });
 
 app.post('/api/outreach/draft-email', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
   try {
     const email = await aiHelpers.draftEmail(getOpenAI(), req.body);
     res.json(email);
@@ -127,6 +193,45 @@ app.post('/api/outreach/draft-email', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Drafts the "nudge" follow-up right after the first email goes out, so it's
+// sitting ready for review by the time followUpDate arrives — the user never
+// has to remember to ask for it. Never auto-approved; still a human decision.
+const draftFollowUpForSentProspect = async (prospect) => {
+  if (!HAS_AI_KEY) return {};
+  try {
+    const followUp = await aiHelpers.draftFollowUpEmail(getOpenAI(), {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      originalSubject: prospect.draftEmailSubject, notes: prospect.notes,
+    });
+    return { followUpEmailSubject: followUp.subject, followUpEmailBody: followUp.body };
+  } catch (error) {
+    console.error(`[follow-up draft] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
+
+// Drafts the courses/apps promo email the first time a prospect's initial
+// email goes out, so it's ready and waiting — but it stays invisible in the
+// queue until promoEligibleDate (a real gap after the first email, so this
+// never lands right on top of the digital-services pitch).
+const draftPromoForSentProspect = async (prospect) => {
+  if (!HAS_AI_KEY) return {};
+  try {
+    const promo = await aiHelpers.draftPromoEmail(getOpenAI(), {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson, notes: prospect.notes,
+    });
+    // Based on the actual send date, not "now" — so backfilling promo drafts
+    // for prospects emailed long ago makes them immediately eligible (their
+    // 7-day gap already passed) instead of pushing eligibility 7 days out.
+    const eligible = new Date(prospect.emailSentAt || Date.now());
+    eligible.setDate(eligible.getDate() + 7);
+    return { promoEmailSubject: promo.subject, promoEmailBody: promo.body, promoEligibleDate: eligible.toISOString().slice(0, 10) };
+  } catch (error) {
+    console.error(`[promo draft] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
 
 app.post('/api/outreach/send-email', async (req, res) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
@@ -144,13 +249,18 @@ app.post('/api/outreach/send-email', async (req, res) => {
     const today = new Date().toISOString().slice(0, 10);
     const followUpDate = new Date();
     followUpDate.setDate(followUpDate.getDate() + 3);
-    const updated = await store.updateProspect(prospectId, {
+    let updated = await store.updateProspect(prospectId, {
       status: prospect.status === 'New' ? 'Contacted' : prospect.status,
       lastContactDate: today,
       followUpDate: followUpDate.toISOString().slice(0, 10),
       draftEmailSubject: subject,
       draftEmailBody: body,
+      emailSentAt: new Date().toISOString(),
     });
+    const followUpDraft = await draftFollowUpForSentProspect(updated);
+    if (Object.keys(followUpDraft).length) updated = await store.updateProspect(prospectId, followUpDraft);
+    const promoDraft = await draftPromoForSentProspect(updated);
+    if (Object.keys(promoDraft).length) updated = await store.updateProspect(prospectId, promoDraft);
     res.json({ message: 'Email sent', prospect: updated });
   } catch (error) {
     console.error('send-email error:', error);
@@ -174,7 +284,7 @@ app.get('/api/outreach/track-open/:id', async (req, res) => {
 // Catches up any prospect added before auto-drafting existed (or where it
 // failed) — drafts gaps + email for everyone currently missing a draft.
 app.post('/api/outreach/draft-missing', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY secret is not set' });
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
   try {
     const prospects = await store.loadProspects();
     const missing = prospects.filter(p => !p.draftEmailBody);
@@ -186,6 +296,67 @@ app.post('/api/outreach/draft-missing', async (req, res) => {
     res.json({ updated: enriched.length });
   } catch (error) {
     console.error('draft-missing error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Re-generates drafts for anything still sitting in the approval queue
+// (drafted but never approved or sent) — safe to overwrite since nothing has
+// gone out yet. Used after a prompt/persona/signature change so old drafts
+// written under a stale template don't linger unreviewed.
+app.post('/api/outreach/redraft-pending', async (req, res) => {
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
+  try {
+    const prospects = await store.loadProspects();
+    const pending = prospects.filter(p => p.draftEmailBody && !p.emailSentAt && !p.emailApproved);
+    const openai = getOpenAI();
+    // Deliberately low concurrency + counting real successes (not attempts) —
+    // enrichProspect silently falls back to {} on failure (e.g. Gemini 429),
+    // which previously made this report "updated: N" even when nothing changed.
+    let updatedCount = 0;
+    let index = 0;
+    const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+      while (index < pending.length) {
+        const prospect = pending[index++];
+        const enrichment = await enrichProspect(openai, prospect);
+        if (Object.keys(enrichment).length) {
+          await store.updateProspect(prospect.id, enrichment);
+          updatedCount += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
+    res.json({ updated: updatedCount, attempted: pending.length });
+  } catch (error) {
+    console.error('redraft-pending error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Backfills the promo campaign for prospects who were emailed before this
+// feature existed — their promoEligibleDate lands in the past (7 days after
+// their actual send date), so they become immediately actionable in the queue.
+app.post('/api/outreach/draft-missing-promos', async (req, res) => {
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
+  try {
+    const prospects = await store.loadProspects();
+    const missing = prospects.filter(p => p.emailSentAt && !p.promoEmailBody);
+    let updatedCount = 0;
+    let index = 0;
+    const workers = Array.from({ length: Math.min(2, missing.length) }, async () => {
+      while (index < missing.length) {
+        const prospect = missing[index++];
+        const promoDraft = await draftPromoForSentProspect(prospect);
+        if (Object.keys(promoDraft).length) {
+          await store.updateProspect(prospect.id, promoDraft);
+          updatedCount += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
+    res.json({ updated: updatedCount, attempted: missing.length });
+  } catch (error) {
+    console.error('draft-missing-promos error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -203,6 +374,52 @@ app.post('/api/outreach/scrape-email/:id', async (req, res) => {
     console.error('scrape-email error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// TEMPORARY diagnostic — tests the exact Custom Search key/cx server-side
+// without ever exposing the raw value, to isolate whether the problem is the
+// key itself, the cx, or the API's enablement state. Remove after debugging.
+app.get('/api/outreach/debug-custom-search', async (req, res) => {
+  const key = (process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || '').trim();
+  const cx = (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim();
+  const result = {
+    keyPresent: !!key, keyLength: key.length, keyLast4: key.slice(-4),
+    cxPresent: !!cx, cxValue: cx,
+  };
+
+  // Test 1: does this exact key work against Places API (New) — a different
+  // API we KNOW is enabled on this project. Proves the key itself is valid
+  // and bound to the right project, independent of Custom Search's own state.
+  try {
+    const placesRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': key,
+        'X-Goog-FieldMask': 'places.id',
+      },
+      body: JSON.stringify({ textQuery: 'test' }),
+    });
+    const placesData = await placesRes.json();
+    result.placesApiTest = placesData.error
+      ? { ok: false, status: placesData.error.status, message: placesData.error.message }
+      : { ok: true, resultCount: (placesData.places || []).length };
+  } catch (e) {
+    result.placesApiTest = { ok: false, exception: e.message };
+  }
+
+  // Test 2: the actual Custom Search call, with the full raw error preserved.
+  try {
+    const csRes = await fetch(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=test`);
+    const csData = await csRes.json();
+    result.customSearchTest = csData.error
+      ? { ok: false, code: csData.error.code, status: csData.error.status, message: csData.error.message, errors: csData.error.errors }
+      : { ok: true, resultCount: (csData.items || []).length };
+  } catch (e) {
+    result.customSearchTest = { ok: false, exception: e.message };
+  }
+
+  res.json(result);
 });
 
 app.post('/api/outreach/scrape-missing-emails', async (req, res) => {
@@ -249,7 +466,7 @@ const runDiscoveryAndSave = async () => {
 
   const found = await prospectFinder.runDailyDiscovery({ apiKey, existingProspects, settings, excludedIdentifiers });
   if (found.length > 0) {
-    const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
+    const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
     await store.bulkAddProspects(enriched);
   }
 
@@ -277,13 +494,30 @@ app.post('/api/outreach/find-prospects', async (req, res) => {
   }
 });
 
+app.post('/api/outreach/import-therapy-directory', async (req, res) => {
+  try {
+    const { count } = req.body || {};
+    const existingProspects = await store.loadProspects();
+    const excludedIdentifiers = await store.loadExcludedIdentifiers();
+    const found = await directoryImporter.importTherapyInLondon({ existingProspects, excludedIdentifiers, count: count || 20 });
+    if (found.length > 0) {
+      const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
+      await store.bulkAddProspects(enriched);
+    }
+    res.json({ found });
+  } catch (error) {
+    console.error('import-therapy-directory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/outreach/freelancer-types', (req, res) => {
   res.json({ types: freelancerFinder.FREELANCER_TYPES });
 });
 
 app.post('/api/outreach/find-freelancers', async (req, res) => {
-  if (!process.env.BlissAgentCustomSearchEng || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
-    return res.status(500).json({ error: 'BlissAgentCustomSearchEng / GOOGLE_CUSTOM_SEARCH_CX secrets are not set' });
+  if (!process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: 'BLISS_AGENT_CUSTOM_SEARCH_ENG / GOOGLE_CUSTOM_SEARCH_CX secrets are not set' });
   }
   try {
     const { cities, freelancerTypes, countPerType } = req.body;
@@ -293,12 +527,12 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
     const existingProspects = await store.loadProspects();
     const excludedIdentifiers = await store.loadExcludedIdentifiers();
     const found = await freelancerFinder.runFreelancerDiscovery({
-      apiKey: (process.env.BlissAgentCustomSearchEng || '').trim(),
+      apiKey: (process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || '').trim(),
       cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
       existingProspects, cities, freelancerTypes, countPerType: countPerType || 5, excludedIdentifiers,
     });
     if (found.length > 0) {
-      const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
+      const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(getOpenAI(), found) : found;
       await store.bulkAddProspects(enriched);
     }
     res.json({ found });
@@ -343,27 +577,58 @@ const sendApprovedBatch = async () => {
 
   const batchSize = Math.min(settings.emailsPerBatch ?? 2, remaining);
   const prospects = await store.loadProspects();
-  const queue = prospects
+  // Unified queue: first-time approved emails and approved follow-up nudges
+  // compete for the same paced batch slots, ordered by whichever was approved
+  // first — a follow-up doesn't jump the line ahead of a fresh lead.
+  const initialItems = prospects
     .filter(p => p.emailApproved && !p.emailSentAt && p.email)
-    .sort((a, b) => (a.approvedAt || a.createdAt || '').localeCompare(b.approvedAt || b.createdAt || ''))
+    .map(p => ({ prospect: p, kind: 'initial', queuedAt: p.approvedAt || p.createdAt || '' }));
+  const followUpItems = prospects
+    .filter(p => p.followUpApproved && !p.followUpSentAt && p.email)
+    .map(p => ({ prospect: p, kind: 'followup', queuedAt: p.followUpApprovedAt || '' }));
+  // Promo is recurring, not one-time — promoApproved gets reset to false after
+  // each send, so it naturally re-enters this same filter once the next
+  // 15-day cycle arrives and the user approves it again.
+  const promoItems = prospects
+    .filter(p => p.promoApproved && p.email)
+    .map(p => ({ prospect: p, kind: 'promo', queuedAt: p.promoApprovedAt || '' }));
+  const queue = [...initialItems, ...followUpItems, ...promoItems]
+    .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
     .slice(0, batchSize);
 
   let sentCount = 0;
-  for (const prospect of queue) {
+  for (const { prospect, kind } of queue) {
     try {
       const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
-      await emailSender.sendEmail({
-        to: prospect.email, subject: prospect.draftEmailSubject, body: prospect.draftEmailBody,
-        fromName: 'Shruti | SKRM Bliss AI', trackingUrl,
-      });
-      const followUpDate = new Date();
-      followUpDate.setDate(followUpDate.getDate() + 3);
-      await store.updateProspect(prospect.id, {
-        emailSentAt: now.toISOString(),
-        status: prospect.status === 'New' ? 'Contacted' : prospect.status,
-        lastContactDate: todayIST,
-        followUpDate: followUpDate.toISOString().slice(0, 10),
-      });
+      const subject = kind === 'initial' ? prospect.draftEmailSubject : kind === 'followup' ? prospect.followUpEmailSubject : prospect.promoEmailSubject;
+      const body = kind === 'initial' ? prospect.draftEmailBody : kind === 'followup' ? prospect.followUpEmailBody : prospect.promoEmailBody;
+      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+
+      if (kind === 'initial') {
+        const followUpDate = new Date();
+        followUpDate.setDate(followUpDate.getDate() + 3);
+        let updated = await store.updateProspect(prospect.id, {
+          emailSentAt: now.toISOString(),
+          status: prospect.status === 'New' ? 'Contacted' : prospect.status,
+          lastContactDate: todayIST,
+          followUpDate: followUpDate.toISOString().slice(0, 10),
+        });
+        const followUpDraft = await draftFollowUpForSentProspect(updated);
+        if (Object.keys(followUpDraft).length) updated = await store.updateProspect(prospect.id, followUpDraft);
+        const promoDraft = await draftPromoForSentProspect(updated);
+        if (Object.keys(promoDraft).length) await store.updateProspect(prospect.id, promoDraft);
+      } else if (kind === 'followup') {
+        await store.updateProspect(prospect.id, { followUpSentAt: now.toISOString(), lastContactDate: todayIST });
+      } else {
+        const nextEligible = new Date();
+        nextEligible.setDate(nextEligible.getDate() + 15);
+        await store.updateProspect(prospect.id, {
+          promoSentAt: now.toISOString(),
+          promoApproved: false,
+          promoEligibleDate: nextEligible.toISOString().slice(0, 10),
+          lastContactDate: todayIST,
+        });
+      }
       sentCount += 1;
       await sleep(3000);
     } catch (error) {

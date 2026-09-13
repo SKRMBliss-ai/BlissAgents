@@ -2,11 +2,12 @@
 // Tier 2: strong opportunities, less saturated. Tier 3: emerging markets worth testing.
 const DEFAULT_CITIES = [
   'Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam',
+  'London', 'Reading', 'Bracknell',
   'Manila', 'Ho Chi Minh City', 'Auckland', 'Vienna', 'Brussels', 'Lisbon',
   'Stockholm', 'Copenhagen', 'Oslo', 'Helsinki', 'Zurich',
   'Mexico City', 'Cairo', 'Nairobi', 'Lagos', 'Warsaw', 'Prague', 'Bucharest', 'Budapest', 'Tallinn',
 ];
-const TIER_1_CITIES = ['Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam'];
+const TIER_1_CITIES = ['Abu Dhabi', 'Riyadh', 'Sydney', 'Toronto', 'Singapore', 'Dublin', 'Amsterdam', 'London', 'Reading', 'Bracknell'];
 const SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 const FIELD_MASK = [
   'places.id',

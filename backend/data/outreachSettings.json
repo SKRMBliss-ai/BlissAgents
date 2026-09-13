@@ -1,13 +1,29 @@
 {
-  "cities": ["Bangalore", "Mumbai", "Delhi", "Pune", "Hyderabad", "Chennai", "Gurgaon"],
-  "businessTypes": ["Hotel/Homestay", "Restaurant/Café", "Coaching Institute", "Wellness Business"],
+  "cities": [
+    "Bangalore",
+    "Mumbai",
+    "Delhi",
+    "Pune",
+    "Hyderabad",
+    "Chennai",
+    "Gurgaon",
+    "London",
+    "Reading",
+    "Bracknell"
+  ],
+  "businessTypes": [
+    "Hotel/Homestay",
+    "Restaurant/Café",
+    "Coaching Institute",
+    "Wellness Business"
+  ],
   "countPerType": 3,
   "dailyRunHour": 8,
-  "lastRunDate": null,
+  "lastRunDate": "2026-09-12",
   "dailyEmailSendLimit": 20,
   "emailsPerBatch": 2,
   "emailSendWindowStartHour": 9,
   "emailSendWindowEndHour": 20,
   "emailsSentToday": 0,
-  "emailSendDate": null
+  "emailSendDate": "2026-09-12"
 }

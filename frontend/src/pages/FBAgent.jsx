@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
-import { Play, Square, CheckCircle, Image as ImageIcon, Link as LinkIcon, List } from 'lucide-react';
+import { Play, Square, CheckCircle, Image as ImageIcon, Link as LinkIcon, List, Sparkles, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const socket = io('http://localhost:3001');
@@ -59,6 +59,12 @@ https://www.facebook.com/groups/881782805675703/`);
   const [imagePreview, setImagePreview] = useState(null);
   const [mediaType, setMediaType] = useState('image');
   const [screenshot, setScreenshot] = useState(null);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [generatingFromYoutube, setGeneratingFromYoutube] = useState(false);
+  const [youtubeError, setYoutubeError] = useState('');
+  const [showManualVideoInfo, setShowManualVideoInfo] = useState(false);
+  const [manualTitle, setManualTitle] = useState('');
+  const [manualDescription, setManualDescription] = useState('');
   const logsEndRef = useRef(null);
 
   useEffect(() => {
@@ -135,6 +141,28 @@ https://www.facebook.com/groups/881782805675703/`);
     await fetch('http://localhost:3001/api/approve', { method: 'POST' });
   };
 
+  const handleGenerateFromYoutube = async () => {
+    if (!youtubeUrl.trim()) return alert('Paste a YouTube link first.');
+    setGeneratingFromYoutube(true);
+    setYoutubeError('');
+    try {
+      const res = await fetch('http://localhost:3001/api/fb/draft-from-youtube', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ youtubeUrl, manualTitle, manualDescription }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setText(`${data.text}\n\n${data.videoUrl}`);
+      setHashtags(data.hashtags);
+      setTitle(data.title);
+    } catch (err) {
+      setYoutubeError(err.message);
+    } finally {
+      setGeneratingFromYoutube(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
       {/* Header */}
@@ -170,6 +198,55 @@ https://www.facebook.com/groups/881782805675703/`);
           </h2>
 
           <div className="space-y-4">
+            <div className="bg-gray-900/60 border border-indigo-900/50 rounded-xl p-4 space-y-2">
+              <label className="block text-sm font-medium text-gray-400">Generate post from a YouTube video</label>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 bg-gray-900 border border-gray-700 rounded-lg p-3 text-white text-sm outline-none"
+                  placeholder="https://youtu.be/..."
+                  value={youtubeUrl}
+                  onChange={e => setYoutubeUrl(e.target.value)}
+                  disabled={status.state !== 'idle'}
+                />
+                <button
+                  onClick={handleGenerateFromYoutube}
+                  disabled={generatingFromYoutube || status.state !== 'idle'}
+                  className="flex-shrink-0 flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold py-3 px-4 rounded-lg transition-all"
+                >
+                  {generatingFromYoutube ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  <span>Generate</span>
+                </button>
+              </div>
+              <p className="text-xs text-gray-500">Pulls the video's title/description and drafts a short, human-sounding post + hashtags below — review and edit before posting.</p>
+              {youtubeError && <p className="text-xs text-red-400">{youtubeError}</p>}
+              <button
+                onClick={() => setShowManualVideoInfo(v => !v)}
+                className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+              >
+                {showManualVideoInfo ? 'Hide manual title/description' : "Video not live yet? Paste title/description manually"}
+              </button>
+              {showManualVideoInfo && (
+                <div className="space-y-2 pt-1">
+                  <input
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
+                    placeholder="Video title"
+                    value={manualTitle}
+                    onChange={e => setManualTitle(e.target.value)}
+                    disabled={status.state !== 'idle'}
+                  />
+                  <textarea
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none resize-y"
+                    rows={3}
+                    placeholder="Video description"
+                    value={manualDescription}
+                    onChange={e => setManualDescription(e.target.value)}
+                    disabled={status.state !== 'idle'}
+                  />
+                  <p className="text-xs text-gray-500">When either of these is filled in, Generate uses them instead of fetching from YouTube.</p>
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-2">Group URLs (One per line)</label>
               <textarea 
@@ -301,14 +378,14 @@ https://www.facebook.com/groups/881782805675703/`);
                   <CheckCircle className="w-8 h-8 text-blue-400 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-2xl font-bold text-white mb-2">Manual Review Required</h3>
-                  <p className="text-blue-200">The bot has prepared the post. Please check the browser window.</p>
+                  <h3 className="text-2xl font-bold text-white mb-2">Your Turn to Post</h3>
+                  <p className="text-blue-200">The post is typed and ready in the browser window. Review it, click Post there yourself, then click below to move to the next group.</p>
                 </div>
-                <button 
+                <button
                   onClick={handleApprove}
                   className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-4 px-8 rounded-xl shadow-lg shadow-blue-900/50 transition-all transform hover:scale-105 active:scale-95 text-lg"
                 >
-                  Approve & Post
+                  I've Posted — Next Group
                 </button>
               </motion.div>
             )}

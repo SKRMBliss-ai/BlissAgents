@@ -210,28 +210,33 @@ const startBot = async ({ text, title, hashtags, groups, imagePath, broadcast })
             }
         }
         
-        broadcast('log', { message: `Auto-approving post for Group ${i + 1}...`, type: 'info' });
-        await delay(3000, 5000); // Small pause to look human before clicking Post
-        if (shouldStop) {
+        // Never clicks Post itself — the post text is typed and ready, but a
+        // human reviews it in the actual browser window and clicks Facebook's
+        // own Post button. This just waits (via the same approve/stop wiring
+        // used for the login-detection flow) until the user clicks "Approve"
+        // in the app to say "posted, move on" — or Stop to end the run.
+        const preview = await takeScreenshot(page, 'preview');
+        broadcast('screenshot', preview);
+        broadcast('log', { message: `Post ready for group ${i + 1}. Review it in the browser window, click Post there yourself, then click "Approve" here to continue.`, type: 'info' });
+        broadcast('state', 'waiting_approval');
+
+        manualApprovalPromise = new Promise((resolve) => { manualApprovalResolve = resolve; });
+        const approved = await manualApprovalPromise;
+        manualApprovalPromise = null;
+        manualApprovalResolve = null;
+
+        if (!approved || shouldStop) {
             broadcast('log', { message: 'Bot stopped.', type: 'info' });
             break;
         }
+        broadcast('state', 'running');
 
-        // Click Post button
-        const postButton = page.locator('div[aria-label="Post"][role="button"]').first();
-        await postButton.click({ force: true });
-
-        // Wait for post to finish
-        await delay(5000, 8000);
-        
-        const resultScreenshot = await takeScreenshot(page, 'success');
-        broadcast('screenshot', resultScreenshot);
-        broadcast('log', { message: `Successfully posted to group ${i + 1}.`, type: 'success' });
+        broadcast('log', { message: `Marked as posted for group ${i + 1}.`, type: 'success' });
         successfulGroups.push(groupUrl);
 
         if (i < groups.length - 1) {
-           const waitTime = Math.floor(Math.random() * (300 - 180 + 1) + 180); // 3 to 5 minutes
-           broadcast('log', { message: `Waiting ${waitTime} seconds before next group...`, type: 'info' });
+           const waitTime = Math.floor(Math.random() * (60 - 15 + 1) + 15); // 15-60s — you already paced yourself by reviewing/clicking Post
+           broadcast('log', { message: `Waiting ${waitTime} seconds before opening next group...`, type: 'info' });
            await delay(waitTime * 1000, waitTime * 1000);
         }
 

@@ -6,9 +6,11 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { startBot, stopBot, approvePost } = require('./bot');
+const { fetchVideoInfo } = require('./youtubeInfo');
 const outreachAgent = require('./outreachAgent');
 const prospectFinder = require('./prospectFinder');
 const freelancerFinder = require('./freelancerFinder');
+const directoryImporter = require('./directoryImporter');
 const emailSender = require('./emailSender');
 const emailScraper = require('./emailScraper');
 const cron = require('node-cron');
@@ -40,7 +42,18 @@ const upload = multer({ storage: storage });
 require('dotenv').config();
 const { OpenAI } = require('openai');
 
-const openai = new OpenAI({
+// Groq's free tier (Llama models) has much higher rate limits than Gemini's
+// free tier, so it's preferred when a GROQ_API_KEY is set — same OpenAI-
+// compatible client, just a different base URL/key/model. Falls back to
+// Gemini if no Groq key is configured.
+const USE_GROQ = !!process.env.GROQ_API_KEY;
+const AI_MODEL = USE_GROQ ? 'openai/gpt-oss-120b' : 'gemini-2.5-flash';
+const HAS_AI_KEY = process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY;
+
+const openai = new OpenAI(USE_GROQ ? {
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+} : {
   apiKey: process.env.GEMINI_API_KEY || 'not-set',
   baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
 });
@@ -66,6 +79,62 @@ const broadcast = (event, data) => {
   if (event === 'state') currentStatus.state = data;
   io.emit(event, data);
 };
+
+// Pulls a video's title/description off YouTube and asks Gemini to write a
+// short, human-sounding Facebook post about it (not a summary, not an ad —
+// the way an actual person shares a video they found meaningful) plus
+// hashtags, for the FB group-posting agent below.
+app.post('/api/fb/draft-from-youtube', async (req, res) => {
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
+  }
+  const { youtubeUrl, manualTitle, manualDescription } = req.body;
+  if (!youtubeUrl) return res.status(400).json({ error: 'youtubeUrl is required' });
+
+  try {
+    // Premieres/unlisted-until-live videos don't expose a scrapeable page yet,
+    // so this falls back to whatever title/description the user pastes in
+    // manually instead of fetching from YouTube.
+    const video = (manualTitle || manualDescription)
+      ? { title: manualTitle || '', description: manualDescription || '', url: youtubeUrl }
+      : await fetchVideoInfo(youtubeUrl);
+
+    const prompt = `
+You are sharing a YouTube video with Facebook groups about presence, mindfulness, and inner peace (in the lineage of Eckhart Tolle's "The Power of Now" and Michael Singer). Write a short Facebook post to accompany a link to this video.
+
+Video title: ${video.title}
+Video description (from YouTube, may be long/promotional — pull only genuine substance from it, ignore boilerplate like subscribe links or timestamps): ${video.description.slice(0, 2000) || 'none provided'}
+
+Write like a real person sharing something that moved them with a community that cares about this topic — not a marketer, not an AI, not a channel promoting itself. Rules:
+- 2-4 short sentences. Conversational, warm, a little personal — as if you watched this and wanted to share one real thought about it, not "check out this video".
+- No superlatives ("amazing", "incredible", "life-changing", "must-watch"). No exclamation marks unless it's genuinely how you'd write it — default to none.
+- Reference ONE specific idea or moment from the video (inferred from the title/description) rather than describing it generically.
+- Do not mention "AI", the channel name as a brand, or any sales/promotional language. This should read like a genuine share, not content marketing.
+- Do not include the video link itself in the text — that's added separately.
+
+Also generate 8-10 relevant hashtags (space-separated, e.g. "#Presence #InnerPeace #EckhartTolle") drawing from mindfulness/presence/spirituality themes relevant to this specific video.
+
+Return ONLY a JSON object: { "post": "...", "hashtags": "..." }
+`;
+
+    const completion = await outreachAgent.withRetry(() => openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        { role: 'system', content: 'You write short, genuinely human social posts — never templated, never salesy. Return only valid JSON.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.8,
+    }));
+    const match = completion.choices[0].message.content.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON object found in AI response');
+    const result = JSON.parse(match[0]);
+
+    res.json({ text: result.post, hashtags: result.hashtags, title: video.title, videoUrl: video.url });
+  } catch (error) {
+    console.error('draft-from-youtube error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // API Endpoints
 app.post('/api/start', upload.single('image'), async (req, res) => {
@@ -153,8 +222,8 @@ app.post('/api/yt-generate-from-book', async (req, res) => {
     return res.status(400).json({ error: 'Book Name, Chapter Name, and Question Number are required' });
   }
 
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
   }
 
   const book = booksData[bookName];
@@ -230,7 +299,7 @@ Return ONLY a strictly formatted JSON object with the following keys:
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gemini-2.5-flash",
+      model: AI_MODEL,
       messages: [
         { role: "system", content: "You are a professional YouTube strategist and copywriter. You must ONLY return a valid JSON object matching the exact structure requested, with no markdown code blocks wrapping the JSON." },
         { role: "user", content: prompt }
@@ -263,12 +332,18 @@ app.get('/api/outreach/prospects', (req, res) => {
 // only prepares a draft, which is still reviewed/approved/sent by the user.
 const enrichProspect = async (prospect) => {
   try {
+    const research = prospect.website
+      ? await outreachAgent.researchProspect(openai, { website: prospect.website, businessType: prospect.businessType })
+      : await outreachAgent.researchProspect(openai, { businessType: prospect.businessType });
     const gaps = await outreachAgent.suggestGaps(openai, {
       businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+      research: research?.summary,
     });
     const draftArgs = {
       businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
+      research: research?.summary,
+      mindGymAppPotential: gaps.mindGymAppPotential, mindGymAppReason: gaps.mindGymAppReason, mindGymAppProduct: gaps.mindGymAppProduct, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason,
     };
     const [email, whatsappMessage] = await Promise.all([
       outreachAgent.draftEmail(openai, draftArgs),
@@ -278,6 +353,11 @@ const enrichProspect = async (prospect) => {
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
       draftEmailSubject: email.subject, draftEmailBody: email.body,
       draftMessage: whatsappMessage,
+      research: research?.summary || null,
+      researchConfidence: research?.confidence || null,
+      researchedAt: research ? new Date().toISOString() : null,
+      mindGymAppPotential: gaps.mindGymAppPotential ?? null, mindGymAppProduct: gaps.mindGymAppProduct || null, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit ?? null, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason || null,
+      mindGymAppReason: gaps.mindGymAppReason || null,
     };
   } catch (error) {
     console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
@@ -320,7 +400,7 @@ app.post('/api/outreach/prospects', async (req, res) => {
     followUpDate: null,
     ...req.body,
   };
-  if (process.env.GEMINI_API_KEY) {
+  if (HAS_AI_KEY) {
     const enrichment = await enrichProspect(prospect);
     prospect = { ...prospect, ...enrichment };
   }
@@ -347,9 +427,61 @@ app.delete('/api/outreach/prospects/:id', (req, res) => {
   res.json({ message: 'Deleted' });
 });
 
+// Researches a single prospect's actual website (real browsing, not pattern
+// reasoning) and re-drafts its email/message grounded in what was found.
+// Meant for prospects added before this feature existed, or to refresh a
+// stale/unsent draft with real research.
+app.post('/api/outreach/prospects/:id/research', async (req, res) => {
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
+  }
+  const prospects = outreachAgent.loadProspects();
+  const idx = prospects.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Prospect not found' });
+  const prospect = prospects[idx];
+  try {
+    const research = await outreachAgent.researchProspect(openai, { website: prospect.website, businessType: prospect.businessType });
+    if (!research) return res.status(422).json({ error: 'Could not research this prospect' });
+
+    const gaps = await outreachAgent.suggestGaps(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, notes: prospect.notes,
+      research: research.summary,
+    });
+    const draftArgs = {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService, notes: prospect.notes,
+      research: research.summary,
+      mindGymAppPotential: gaps.mindGymAppPotential, mindGymAppReason: gaps.mindGymAppReason, mindGymAppProduct: gaps.mindGymAppProduct, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason,
+    };
+    const [email, whatsappMessage] = await Promise.all([
+      outreachAgent.draftEmail(openai, draftArgs),
+      outreachAgent.draftMessage(openai, draftArgs),
+    ]);
+
+    prospects[idx] = {
+      ...prospect,
+      research: research.summary,
+      researchConfidence: research.confidence,
+      researchedAt: new Date().toISOString(),
+      digitalGaps: gaps.digitalGaps,
+      recommendedService: gaps.recommendedService,
+      draftEmailSubject: email.subject,
+      draftEmailBody: email.body,
+      draftMessage: whatsappMessage,
+      mindGymAppPotential: gaps.mindGymAppPotential ?? null, mindGymAppProduct: gaps.mindGymAppProduct || null, feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit ?? null, feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason || null,
+      mindGymAppReason: gaps.mindGymAppReason || null,
+    };
+    outreachAgent.saveProspects(prospects);
+    res.json(prospects[idx]);
+  } catch (error) {
+    console.error('research error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/outreach/suggest-gaps', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
   }
   try {
     const result = await outreachAgent.suggestGaps(openai, req.body);
@@ -361,8 +493,8 @@ app.post('/api/outreach/suggest-gaps', async (req, res) => {
 });
 
 app.post('/api/outreach/draft-message', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
   }
   try {
     const message = await outreachAgent.draftMessage(openai, req.body);
@@ -374,8 +506,8 @@ app.post('/api/outreach/draft-message', async (req, res) => {
 });
 
 app.post('/api/outreach/draft-email', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
   }
   try {
     const email = await outreachAgent.draftEmail(openai, req.body);
@@ -385,6 +517,45 @@ app.post('/api/outreach/draft-email', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Drafts the "nudge" follow-up right after the first email goes out, so it's
+// sitting ready for review by the time followUpDate arrives — the user never
+// has to remember to ask for it. Never auto-approved; still a human decision.
+const draftFollowUpForSentProspect = async (prospect) => {
+  if (!HAS_AI_KEY) return {};
+  try {
+    const followUp = await outreachAgent.draftFollowUpEmail(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson,
+      originalSubject: prospect.draftEmailSubject, notes: prospect.notes,
+    });
+    return { followUpEmailSubject: followUp.subject, followUpEmailBody: followUp.body };
+  } catch (error) {
+    console.error(`[follow-up draft] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
+
+// Drafts the courses/apps promo email the first time a prospect's initial
+// email goes out, so it's ready and waiting — but it stays invisible in the
+// queue until promoEligibleDate (a real gap after the first email, so this
+// never lands right on top of the digital-services pitch).
+const draftPromoForSentProspect = async (prospect) => {
+  if (!HAS_AI_KEY) return {};
+  try {
+    const promo = await outreachAgent.draftPromoEmail(openai, {
+      businessName: prospect.businessName, businessType: prospect.businessType, contactPerson: prospect.contactPerson, notes: prospect.notes,
+    });
+    // Based on the actual send date, not "now" — so backfilling promo drafts
+    // for prospects emailed long ago makes them immediately eligible (their
+    // 7-day gap already passed) instead of pushing eligibility 7 days out.
+    const eligible = new Date(prospect.emailSentAt || Date.now());
+    eligible.setDate(eligible.getDate() + 7);
+    return { promoEmailSubject: promo.subject, promoEmailBody: promo.body, promoEligibleDate: eligible.toISOString().slice(0, 10) };
+  } catch (error) {
+    console.error(`[promo draft] Failed for "${prospect.businessName}":`, error.message);
+    return {};
+  }
+};
 
 app.post('/api/outreach/send-email', async (req, res) => {
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
@@ -411,7 +582,12 @@ app.post('/api/outreach/send-email', async (req, res) => {
       followUpDate: followUpDate.toISOString().slice(0, 10),
       draftEmailSubject: subject,
       draftEmailBody: body,
+      emailSentAt: new Date().toISOString(),
     });
+    const followUpDraft = await draftFollowUpForSentProspect(prospect);
+    Object.assign(prospect, followUpDraft);
+    const promoDraft = await draftPromoForSentProspect(prospect);
+    Object.assign(prospect, promoDraft);
     outreachAgent.saveProspects(prospects);
     res.json({ message: 'Email sent', prospect });
   } catch (error) {
@@ -438,8 +614,8 @@ app.get('/api/outreach/track-open/:id', (req, res) => {
 // Catches up any prospect added before auto-drafting existed (or where it
 // failed) — drafts gaps + email for everyone currently missing a draft.
 app.post('/api/outreach/draft-missing', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not set in backend/.env' });
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
   }
   try {
     const prospects = outreachAgent.loadProspects();
@@ -451,6 +627,72 @@ app.post('/api/outreach/draft-missing', async (req, res) => {
     res.json({ updated: enriched.length });
   } catch (error) {
     console.error('draft-missing error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Re-generates drafts for anything still sitting in the approval queue
+// (drafted but never approved or sent) — safe to overwrite since nothing has
+// gone out yet. Used after a prompt/persona/signature change so old drafts
+// written under a stale template don't linger unreviewed.
+app.post('/api/outreach/redraft-pending', async (req, res) => {
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
+  }
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const pending = prospects.filter(p => p.draftEmailBody && !p.emailSentAt && !p.emailApproved);
+    // Deliberately low concurrency + counting real successes (not attempts) —
+    // enrichProspect silently falls back to {} on failure (e.g. Gemini 429),
+    // which previously made this report "updated: N" even when nothing changed.
+    let updatedCount = 0;
+    let index = 0;
+    const workers = Array.from({ length: Math.min(2, pending.length) }, async () => {
+      while (index < pending.length) {
+        const prospect = pending[index++];
+        const enrichment = await enrichProspect(prospect);
+        if (Object.keys(enrichment).length) {
+          Object.assign(prospect, enrichment);
+          updatedCount += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
+    outreachAgent.saveProspects(prospects);
+    res.json({ updated: updatedCount, attempted: pending.length });
+  } catch (error) {
+    console.error('redraft-pending error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Backfills the promo campaign for prospects who were emailed before this
+// feature existed — their promoEligibleDate lands in the past (7 days after
+// their actual send date), so they become immediately actionable in the queue.
+app.post('/api/outreach/draft-missing-promos', async (req, res) => {
+  if (!HAS_AI_KEY) {
+    return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY in backend/.env)' });
+  }
+  try {
+    const prospects = outreachAgent.loadProspects();
+    const missing = prospects.filter(p => p.emailSentAt && !p.promoEmailBody);
+    let updatedCount = 0;
+    let index = 0;
+    const workers = Array.from({ length: Math.min(2, missing.length) }, async () => {
+      while (index < missing.length) {
+        const prospect = missing[index++];
+        const promoDraft = await draftPromoForSentProspect(prospect);
+        if (Object.keys(promoDraft).length) {
+          Object.assign(prospect, promoDraft);
+          updatedCount += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
+    outreachAgent.saveProspects(prospects);
+    res.json({ updated: updatedCount, attempted: missing.length });
+  } catch (error) {
+    console.error('draft-missing-promos error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -529,7 +771,7 @@ const runDiscoveryAndSave = async () => {
       followUpDate: null,
       ...p,
     }));
-    const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
+    const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
     outreachAgent.saveProspects([...enriched, ...existingProspects]);
   }
 
@@ -557,9 +799,33 @@ app.get('/api/outreach/freelancer-types', (req, res) => {
   res.json({ types: freelancerFinder.FREELANCER_TYPES });
 });
 
+app.post('/api/outreach/import-therapy-directory', async (req, res) => {
+  try {
+    const { count } = req.body || {};
+    const existingProspects = outreachAgent.loadProspects();
+    const excludedIdentifiers = outreachAgent.loadExcludedIdentifiers();
+    const found = await directoryImporter.importTherapyInLondon({ existingProspects, excludedIdentifiers, count: count || 20 });
+    if (found.length > 0) {
+      const now = new Date().toISOString();
+      const withDefaults = found.map((p, i) => ({
+        id: (Date.now() + i).toString(),
+        digitalGaps: [], recommendedService: '', draftMessage: '', status: 'New',
+        createdAt: now, lastContactDate: null, followUpDate: null,
+        ...p,
+      }));
+      const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
+      outreachAgent.saveProspects([...enriched, ...existingProspects]);
+    }
+    res.json({ found });
+  } catch (error) {
+    console.error('import-therapy-directory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/outreach/find-freelancers', async (req, res) => {
-  if (!process.env.BlissAgentCustomSearchEng || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
-    return res.status(500).json({ error: 'BlissAgentCustomSearchEng / GOOGLE_CUSTOM_SEARCH_CX is not set in backend/.env' });
+  if (!process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: 'BLISS_AGENT_CUSTOM_SEARCH_ENG / GOOGLE_CUSTOM_SEARCH_CX is not set in backend/.env' });
   }
   try {
     const { cities, freelancerTypes, countPerType } = req.body;
@@ -569,7 +835,7 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
     const existingProspects = outreachAgent.loadProspects();
     const excludedIdentifiers = outreachAgent.loadExcludedIdentifiers();
     const found = await freelancerFinder.runFreelancerDiscovery({
-      apiKey: (process.env.BlissAgentCustomSearchEng || '').trim(),
+      apiKey: (process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || '').trim(),
       cx: (process.env.GOOGLE_CUSTOM_SEARCH_CX || '').trim(),
       existingProspects, cities, freelancerTypes, countPerType: countPerType || 5, excludedIdentifiers,
     });
@@ -581,7 +847,7 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
         createdAt: now, lastContactDate: null, followUpDate: null,
         ...p,
       }));
-      const enriched = process.env.GEMINI_API_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
+      const enriched = HAS_AI_KEY ? await enrichProspectsConcurrently(withDefaults) : withDefaults;
       outreachAgent.saveProspects([...enriched, ...existingProspects]);
     }
     res.json({ found });
@@ -628,27 +894,58 @@ const sendApprovedBatch = async () => {
 
   const batchSize = Math.min(settings.emailsPerBatch ?? 2, remaining);
   const prospects = outreachAgent.loadProspects();
-  const queue = prospects
+  // Unified queue: first-time approved emails and approved follow-up nudges
+  // compete for the same paced batch slots, ordered by whichever was approved
+  // first — a follow-up doesn't jump the line ahead of a fresh lead.
+  const initialItems = prospects
     .filter(p => p.emailApproved && !p.emailSentAt && p.email)
-    .sort((a, b) => (a.approvedAt || a.createdAt || '').localeCompare(b.approvedAt || b.createdAt || ''))
+    .map(p => ({ prospect: p, kind: 'initial', queuedAt: p.approvedAt || p.createdAt || '' }));
+  const followUpItems = prospects
+    .filter(p => p.followUpApproved && !p.followUpSentAt && p.email)
+    .map(p => ({ prospect: p, kind: 'followup', queuedAt: p.followUpApprovedAt || '' }));
+  // Promo is recurring, not one-time — promoApproved gets reset to false after
+  // each send, so it naturally re-enters this same filter once the next
+  // 15-day cycle arrives and the user approves it again.
+  const promoItems = prospects
+    .filter(p => p.promoApproved && p.email)
+    .map(p => ({ prospect: p, kind: 'promo', queuedAt: p.promoApprovedAt || '' }));
+  const queue = [...initialItems, ...followUpItems, ...promoItems]
+    .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
     .slice(0, batchSize);
 
   let sentCount = 0;
-  for (const prospect of queue) {
+  for (const { prospect, kind } of queue) {
     try {
       const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
-      await emailSender.sendEmail({
-        to: prospect.email, subject: prospect.draftEmailSubject, body: prospect.draftEmailBody,
-        fromName: 'Shruti | SKRM Bliss AI', trackingUrl,
-      });
-      const followUpDate = new Date();
-      followUpDate.setDate(followUpDate.getDate() + 3);
-      Object.assign(prospect, {
-        emailSentAt: now.toISOString(),
-        status: prospect.status === 'New' ? 'Contacted' : prospect.status,
-        lastContactDate: todayIST,
-        followUpDate: followUpDate.toISOString().slice(0, 10),
-      });
+      const subject = kind === 'initial' ? prospect.draftEmailSubject : kind === 'followup' ? prospect.followUpEmailSubject : prospect.promoEmailSubject;
+      const body = kind === 'initial' ? prospect.draftEmailBody : kind === 'followup' ? prospect.followUpEmailBody : prospect.promoEmailBody;
+      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+
+      if (kind === 'initial') {
+        const followUpDate = new Date();
+        followUpDate.setDate(followUpDate.getDate() + 3);
+        Object.assign(prospect, {
+          emailSentAt: now.toISOString(),
+          status: prospect.status === 'New' ? 'Contacted' : prospect.status,
+          lastContactDate: todayIST,
+          followUpDate: followUpDate.toISOString().slice(0, 10),
+        });
+        const followUpDraft = await draftFollowUpForSentProspect(prospect);
+        Object.assign(prospect, followUpDraft);
+        const promoDraft = await draftPromoForSentProspect(prospect);
+        Object.assign(prospect, promoDraft);
+      } else if (kind === 'followup') {
+        Object.assign(prospect, { followUpSentAt: now.toISOString(), lastContactDate: todayIST });
+      } else {
+        const nextEligible = new Date();
+        nextEligible.setDate(nextEligible.getDate() + 15);
+        Object.assign(prospect, {
+          promoSentAt: now.toISOString(),
+          promoApproved: false,
+          promoEligibleDate: nextEligible.toISOString().slice(0, 10),
+          lastContactDate: todayIST,
+        });
+      }
       sentCount += 1;
       await sleep(3000);
     } catch (error) {

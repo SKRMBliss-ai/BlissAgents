@@ -3,12 +3,22 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
-  Send, Repeat, Mail, Phone, Compass, ArrowUpDown,
+  Send, Repeat, Mail, Phone, Compass, Search,
 } from 'lucide-react';
 
 const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/outreach';
+// Firebase Hosting's rewrite proxy times out well before the Cloud Function's
+// own configured limit — fine for normal requests, but redraft-pending can run
+// for minutes across many prospects (with AI rate-limit retries). Hitting the
+// function's direct Cloud Run URL for that one call bypasses Hosting's shorter
+// timeout entirely; CORS is already enabled on the function for this.
+const FUNCTIONS_DIRECT_API = import.meta.env.PROD ? 'https://api-vvuw6rft4q-uc.a.run.app/api/outreach' : API;
 
 const STATUSES = ['New', 'Contacted', 'No Response', 'Interested', 'Meeting Booked', 'Client', 'Not Interested'];
+// Stored value stays 'New' (everything else in the code checks status === 'New')
+// — this only renames the label shown in the dropdown to match the "Not
+// contacted" wording used elsewhere in the UI.
+const STATUS_LABELS = { New: 'Not contacted' };
 const BUSINESS_TYPES = [
   'Hotel/Homestay', 'Restaurant/Café', 'Coaching Institute', 'Wellness Business',
   'Clinic', 'Small Manufacturer', 'Real Estate', 'Consultant', 'Local Retailer', 'Startup',
@@ -93,6 +103,113 @@ const deriveCategory = (p) => {
   return isDated ? 'outdated_website' : 'established_website';
 };
 
+// Discovery embeds "Prospect fit score: N/8" (no website / right-sized /
+// paying capacity) as free text in notes — no structured field exists, so we
+// parse it back out for ranking. Manually-added or freelancer prospects won't
+// have this and simply sort as unscored (score = null, treated as 0).
+const parseFitScore = (notes) => {
+  const m = (notes || '').match(/Prospect fit score:\s*(\d+)\/8/i);
+  return m ? parseInt(m[1], 10) : null;
+};
+
+const isFollowUpDue = (p) => !!p.followUpDate && p.followUpDate <= new Date().toISOString().slice(0, 10);
+
+// True once a prospect has been reached through ANY channel — WhatsApp,
+// social, or simply having its pipeline Status moved off "New" (a manual
+// signal the user set themselves, e.g. after a phone call or in-person
+// contact). An unapproved email draft stops nagging as "Needs Review" once
+// this is true, since chasing an already-reached prospect for email review
+// isn't urgent the same way a completely untouched lead is.
+const alreadyContactedElsewhere = (p) => !!p.whatsappSentAt || !!p.socialSentAt || (!!p.status && p.status !== 'New');
+
+// Places API addresses reliably end with "United Kingdom" as the country; the
+// city names are a fallback for manually-added prospects whose notes don't
+// follow that formatted-address shape.
+const isUK = (p) => {
+  const n = (p.notes || '').toLowerCase();
+  return n.includes('united kingdom') || n.includes('london') || n.includes('reading') || n.includes('bracknell');
+};
+
+// The promo email is recurring (15-day cycle) rather than one-shot, so
+// "due" here means "the last cycle finished and it's time to consider it
+// again" — true before the very first send too, once the initial 7-day gap
+// after the first email has passed.
+const isPromoDue = (p) => !!p.promoEligibleDate && p.promoEligibleDate <= new Date().toISOString().slice(0, 10);
+
+// The email send lifecycle, independent of the pipeline `status` field (New/
+// Contacted/Interested/etc — a manual sales-stage judgment). This is purely
+// mechanical: where is this prospect's email in the send pipeline right now.
+// Kind-aware since a prospect can have an initial/follow-up row AND a
+// separate promo row, each on its own independent timeline.
+const computeSendStage = (p, kind = 'initial') => {
+  if (kind === 'promo') {
+    if (p.promoApproved) return 'Promo In Queue';
+    if (p.promoEmailBody && isPromoDue(p)) return 'Promo Ready';
+    if (p.promoSentAt) return 'Promo Sent';
+    return null;
+  }
+  if (kind === 'followup') {
+    if (p.followUpSentAt) return '1st Follow-up Sent';
+    if (p.followUpApproved) return 'Follow-up In Queue';
+    if (p.followUpEmailBody && isFollowUpDue(p)) return 'Follow-up Ready';
+    return null;
+  }
+  if (p.emailSentAt) return 'Sent';
+  if (p.emailApproved) return 'In Queue';
+  if (p.draftEmailBody) return alreadyContactedElsewhere(p) ? null : 'Needs Review';
+  return null;
+};
+
+const SEND_STAGE_COLOR = {
+  'Needs Review': 'bg-gray-800 border-gray-600 text-gray-400',
+  'In Queue': 'bg-indigo-900/40 border-indigo-600 text-indigo-300',
+  'Sent': 'bg-blue-900/40 border-blue-600 text-blue-300',
+  'Follow-up Ready': 'bg-orange-900/40 border-orange-600 text-orange-300',
+  'Follow-up In Queue': 'bg-indigo-900/40 border-indigo-600 text-indigo-300',
+  '1st Follow-up Sent': 'bg-green-900/40 border-green-600 text-green-300',
+  'Promo Ready': 'bg-purple-900/40 border-purple-600 text-purple-300',
+  'Promo In Queue': 'bg-indigo-900/40 border-indigo-600 text-indigo-300',
+  'Promo Sent': 'bg-teal-900/40 border-teal-600 text-teal-300',
+};
+
+// Contact tier: 0 = no website + has email (best possible lead — clearly
+// needs the service AND reachable right now), 1 = has website + has email
+// (still reachable, less urgent need), 2 = has some other contact path
+// (WhatsApp or website — worth a manual look), 3 = totally unreachable.
+const contactTier = (p) => {
+  if (p.email) return p.website ? 1 : 0;
+  if ((p.whatsapp && !p.whatsappInvalid) || p.website) return 2;
+  return 3;
+};
+
+// Surfaces the two calls-to-action the user actually cares about triaging
+// each morning: brand-new leads reachable right now (by email or WhatsApp)
+// worth a first outreach today, and existing contacts whose follow-up date
+// has arrived or passed. Everything else gets no badge and just falls back
+// to normal contact-tier ordering. Reachable = has email or valid WhatsApp —
+// a website alone isn't a contact channel, so tier 2 (website-only) doesn't
+// qualify as "Must Contact".
+const isReachable = (p) => !!p.email || (!!p.whatsapp && !p.whatsappInvalid);
+const priorityInfo = (p) => {
+  const tier = contactTier(p);
+  if (isReachable(p) && p.status === 'New') return { label: 'Must Contact', rank: 0 };
+  if (isFollowUpDue(p) && p.status !== 'Client' && p.status !== 'Not Interested') return { label: 'Must Follow Up', rank: 1 };
+  return { label: null, rank: tier + 2 };
+};
+
+// One-glance summary of every channel this prospect has actually been
+// reached through — the thing that was hardest to see at a glance before,
+// buried across a status dropdown, a "Sent" badge, and two small icon
+// buttons. Returns null when nothing has gone out yet.
+const contactedVia = (p) => {
+  const channels = [];
+  if (p.emailSentAt) channels.push('Email');
+  if (p.whatsappSentAt) channels.push('WhatsApp');
+  if (p.socialSentAt) channels.push('Insta/FB');
+  if (!channels.length && p.status && p.status !== 'New') channels.push(p.status);
+  return channels.length ? channels.join(' + ') : null;
+};
+
 const googleSearchLink = (businessName, notes) => {
   const location = (notes || '').split('·')[0]?.trim() || '';
   return `https://www.google.com/search?q=${encodeURIComponent(`${businessName} ${location}`.trim())}`;
@@ -109,16 +226,26 @@ function OutreachAgent() {
   const [findingProspects, setFindingProspects] = useState(false);
   const [findError, setFindError] = useState('');
   const [findResultCount, setFindResultCount] = useState(null);
-  const [sortBy, setSortBy] = useState('createdAt');
-  const [sortDir, setSortDir] = useState('desc');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [emailOnlyFilter, setEmailOnlyFilter] = useState(false);
+  const [nonIndianFilter, setNonIndianFilter] = useState(false);
+  const [ukOnlyFilter, setUkOnlyFilter] = useState(false);
+  const [priorityOnlyFilter, setPriorityOnlyFilter] = useState(false);
+  const [expandedQueueIds, setExpandedQueueIds] = useState(new Set());
+  const [redrafting, setRedrafting] = useState(false);
+  const [redraftResult, setRedraftResult] = useState(null);
+  const [draftingPromos, setDraftingPromos] = useState(false);
+  const [promoDraftResult, setPromoDraftResult] = useState(null);
+  const [discoveryExpanded, setDiscoveryExpanded] = useState(false);
   const [freelancerTypes, setFreelancerTypes] = useState([]);
   const [selectedFreelancerTypes, setSelectedFreelancerTypes] = useState([]);
   const [freelancerCities, setFreelancerCities] = useState([]);
   const [findingFreelancers, setFindingFreelancers] = useState(false);
   const [freelancerError, setFreelancerError] = useState('');
   const [freelancerResultCount, setFreelancerResultCount] = useState(null);
+  const [importingDirectory, setImportingDirectory] = useState(false);
+  const [directoryError, setDirectoryError] = useState('');
+  const [directoryResultCount, setDirectoryResultCount] = useState(null);
 
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
@@ -164,6 +291,27 @@ function OutreachAgent() {
       setFreelancerError(e.message);
     } finally {
       setFindingFreelancers(false);
+    }
+  };
+
+  const handleImportTherapyDirectory = async () => {
+    setImportingDirectory(true);
+    setDirectoryError('');
+    setDirectoryResultCount(null);
+    try {
+      const res = await fetch(`${API}/import-therapy-directory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 20 }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setDirectoryResultCount(data.found.length);
+      await fetchProspects();
+    } catch (e) {
+      setDirectoryError(e.message);
+    } finally {
+      setImportingDirectory(false);
     }
   };
 
@@ -284,7 +432,7 @@ function OutreachAgent() {
       const res = await fetch(`${API}/suggest-gaps`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ businessName: p.businessName, businessType: p.businessType, notes: p.notes }),
+        body: JSON.stringify({ businessName: p.businessName, businessType: p.businessType, notes: p.notes, research: p.research }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -325,7 +473,7 @@ function OutreachAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           businessName: p.businessName, businessType: p.businessType, contactPerson: p.contactPerson,
-          digitalGaps: p.digitalGaps, recommendedService: p.recommendedService, notes: p.notes,
+          digitalGaps: p.digitalGaps, recommendedService: p.recommendedService, notes: p.notes, research: p.research,
         }),
       });
       const data = await res.json();
@@ -333,6 +481,24 @@ function OutreachAgent() {
       await updateProspect(p.id, { draftEmailSubject: data.subject, draftEmailBody: data.body });
     } catch (e) {
       alert('Could not draft email: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Actually browses the prospect's own website and re-drafts everything
+  // grounded in what was found there — separate from handleDraftEmail, which
+  // only reasons from businessType patterns.
+  const handleResearch = async (p) => {
+    if (!p.website) return alert('This prospect has no website to research.');
+    setBusyId(p.id + '-research');
+    try {
+      const res = await fetch(`${FUNCTIONS_DIRECT_API}/prospects/${p.id}/research`, { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not research this prospect: ' + e.message);
     } finally {
       setBusyId(null);
     }
@@ -364,6 +530,18 @@ function OutreachAgent() {
 
   const handleUnapproveEmail = (p) => updateProspect(p.id, { emailApproved: false });
 
+  const handleApproveFollowUp = (p) => updateProspect(p.id, {
+    followUpApproved: true, followUpApprovedAt: new Date().toISOString(),
+  });
+
+  const handleUnapproveFollowUp = (p) => updateProspect(p.id, { followUpApproved: false });
+
+  const handleApprovePromo = (p) => updateProspect(p.id, {
+    promoApproved: true, promoApprovedAt: new Date().toISOString(),
+  });
+
+  const handleUnapprovePromo = (p) => updateProspect(p.id, { promoApproved: false });
+
   // For when you write/send the email yourself outside the app entirely (e.g.
   // AI drafting is rate-limited, or you just prefer to) — logs it the same way
   // an in-app send would, and stops the daily queue from also sending it.
@@ -388,21 +566,16 @@ function OutreachAgent() {
   const handleMarkWhatsAppInvalid = (p) => updateProspect(p.id, { whatsappInvalid: true });
   const handleUnmarkWhatsAppInvalid = (p) => updateProspect(p.id, { whatsappInvalid: false });
 
-  const toggleSelect = (id) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
+  // For outreach sent as an FB/Instagram DM outside the app (the app can't
+  // automate social DMs), so it's still tracked as a real contact touch.
+  const handleMarkSocialSent = (p) => updateProspect(p.id, {
+    socialSentAt: new Date().toISOString(),
+    status: p.status === 'New' ? 'Contacted' : p.status,
+    lastContactDate: todayStr(),
+    followUpDate: addDays(todayStr(), 3),
+  });
 
-  const eligibleForWhatsAppSend = (p) => p.whatsapp && p.draftMessage && !p.whatsappInvalid;
-
-  const toggleSelectAllVisible = () => {
-    const eligible = sortedProspects.filter(eligibleForWhatsAppSend);
-    const allSelected = eligible.length > 0 && eligible.every(p => selectedIds.has(p.id));
-    setSelectedIds(allSelected ? new Set() : new Set(eligible.map(p => p.id)));
-  };
+  const handleUnmarkSocialSent = (p) => updateProspect(p.id, { socialSentAt: null });
 
   const [draftingMissing, setDraftingMissing] = useState(false);
   const missingDraftCount = prospects.filter(p => !p.draftEmailBody).length;
@@ -456,17 +629,6 @@ function OutreachAgent() {
     }
   };
 
-  // Opens each selected prospect's WhatsApp chat with the draft message
-  // pre-filled in the compose box — you still click Send yourself in each tab.
-  // Never sends anything automatically.
-  const handleBulkSendWhatsApp = () => {
-    const targets = prospects.filter(p => selectedIds.has(p.id) && eligibleForWhatsAppSend(p));
-    if (targets.length === 0) return;
-    if (!confirm(`Open WhatsApp for ${targets.length} selected prospect${targets.length === 1 ? '' : 's'}? You'll still need to click Send in each one.`)) return;
-    targets.forEach(p => window.open(whatsappLink(p.whatsapp, p.draftMessage), '_blank'));
-    setSelectedIds(new Set());
-  };
-
   const markContacted = (p) => updateProspect(p.id, {
     status: 'Contacted', lastContactDate: todayStr(), followUpDate: addDays(todayStr(), 3),
   });
@@ -477,16 +639,6 @@ function OutreachAgent() {
     if (status === 'Interested' || status === 'Meeting Booked' || status === 'Client' || status === 'Not Interested') patch.followUpDate = null;
     updateProspect(p.id, patch);
   };
-
-  const digest = useMemo(() => {
-    const dueFollowUps = prospects.filter(p =>
-      p.followUpDate && p.followUpDate <= todayStr() &&
-      !['Meeting Booked', 'Client', 'Not Interested'].includes(p.status)
-    );
-    const interested = prospects.filter(p => p.status === 'Interested');
-    const newToday = prospects.filter(p => p.status === 'New' && p.createdAt?.slice(0, 10) === todayStr());
-    return { dueFollowUps, interested, newToday };
-  }, [prospects]);
 
   const stats = useMemo(() => {
     const total = prospects.length;
@@ -499,53 +651,108 @@ function OutreachAgent() {
     return { total, reachedOut, followedUp, emailsOpened, queuedForSend };
   }, [prospects]);
 
-  const categoryCounts = useMemo(() => {
-    const counts = {};
-    for (const p of prospects) {
-      const cat = deriveCategory(p);
-      counts[cat] = (counts[cat] || 0) + 1;
-    }
-    return counts;
-  }, [prospects]);
+  // The single unified list — replaces the old separate "Approval Queue" +
+  // "Prospect Pipeline" table. Every prospect gets exactly one row here,
+  // through its whole life: no draft yet → drafted, needs review → approved,
+  // in queue → sent → (optionally) follow-up ready → done. Whichever half of
+  // a prospect's story is currently actionable (initial email or follow-up)
+  // decides what "kind" this row acts on; once contacted via WhatsApp/social
+  // an un-approved draft stops needing review since they're already reached.
+  const approvalQueue = useMemo(() => {
+    const followUpActionable = (p) => p.followUpEmailBody && !p.followUpSentAt
+      && (p.followUpApproved || (isFollowUpDue(p) && !alreadyContactedElsewhere(p)));
+    // Promo runs on its own 15-day recurring cycle, independent of the
+    // initial/follow-up thread — so it shows as its OWN extra row rather than
+    // replacing the primary row, since both can be actionable at once.
+    const promoActionable = (p) => p.promoEmailBody && (p.promoApproved || isPromoDue(p));
 
-  const sortedProspects = useMemo(() => {
-    const filtered = categoryFilter === 'all' ? prospects : prospects.filter(p => deriveCategory(p) === categoryFilter);
-    // Contact tier: 0 = has email (reach out now), 1 = has some other contact
-    // path (WhatsApp or website — worth a manual look), 2 = totally unreachable
-    // (no email/WhatsApp/website at all) — not worth spending time on, so these
-    // sink to the bottom regardless of whatever else is sorted.
-    const contactTier = (p) => {
-      if (p.email) return 0;
-      if ((p.whatsapp && !p.whatsappInvalid) || p.website) return 1;
-      return 2;
+    const rows = prospects.flatMap(p => {
+      const primary = { p, kind: followUpActionable(p) ? 'followup' : 'initial' };
+      return promoActionable(p) ? [primary, { p, kind: 'promo' }] : [primary];
+    });
+
+    // One combined "how urgently does this need my attention" bucket —
+    // important/untouched leads first, sent/done rows sink to the bottom,
+    // regardless of fit score or anything else. Lower = higher up the list.
+    const sortTier = ({ p, kind }) => {
+      const stage = computeSendStage(p, kind);
+      const priority = priorityInfo(p).label;
+      if (stage === 'Needs Review' || stage === 'Follow-up Ready' || stage === 'Promo Ready') {
+        return priority === 'Must Contact' ? 0 : priority === 'Must Follow Up' ? 1 : 2;
+      }
+      if (stage === 'In Queue' || stage === 'Follow-up In Queue' || stage === 'Promo In Queue') return 3;
+      if (kind === 'initial' && !p.draftEmailBody && !p.emailSentAt) return 4;
+      return 5;
     };
 
-    const sorted = [...filtered].sort((a, b) => {
-      const at = contactTier(a);
-      const bt = contactTier(b);
-      if (at !== bt) return at - bt;
+    return rows
+      .filter(({ p }) => categoryFilter === 'all' || deriveCategory(p) === categoryFilter)
+      .filter(({ p }) => !emailOnlyFilter || !!p.email)
+      .filter(({ p }) => !nonIndianFilter || !(p.notes || '').toLowerCase().includes('india'))
+      .filter(({ p }) => !ukOnlyFilter || isUK(p))
+      .filter(({ p }) => !priorityOnlyFilter || priorityInfo(p).label !== null)
+      .sort((a, b) => {
+        const at = sortTier(a);
+        const bt = sortTier(b);
+        if (at !== bt) return at - bt;
+        const ae = a.p.email ? 0 : 1;
+        const be = b.p.email ? 0 : 1;
+        if (ae !== be) return ae - be;
+        const as = parseFitScore(a.p.notes) ?? -1;
+        const bs = parseFitScore(b.p.notes) ?? -1;
+        if (as !== bs) return bs - as;
+        return priorityInfo(a.p).rank - priorityInfo(b.p).rank || (a.p.createdAt || '').localeCompare(b.p.createdAt || '');
+      });
+  }, [prospects, categoryFilter, emailOnlyFilter, nonIndianFilter, ukOnlyFilter, priorityOnlyFilter]);
 
-      if (sortBy === 'category') {
-        const ar = OUTREACH_CATEGORIES[deriveCategory(a)].rank;
-        const br = OUTREACH_CATEGORIES[deriveCategory(b)].rank;
-        return sortDir === 'asc' ? ar - br : br - ar;
+  const handleRedraftPending = async () => {
+    if (!confirm(`Regenerate all ${approvalQueue.filter(({ kind }) => kind === 'initial').length} pending first-touch drafts with the latest template? Any manual edits to unapproved drafts will be overwritten. This can take a couple of minutes and may hit AI rate limits — any prospect that fails just keeps its current draft, and you can run this again to retry those.`)) return;
+    setRedrafting(true);
+    setRedraftResult(null);
+    try {
+      const res = await fetch(`${FUNCTIONS_DIRECT_API}/redraft-pending`, { method: 'POST' });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Server returned an unexpected response (status ${res.status}) — try again in a moment.`);
       }
-      const av = a[sortBy] || '';
-      const bv = b[sortBy] || '';
-      if (av < bv) return sortDir === 'asc' ? -1 : 1;
-      if (av > bv) return sortDir === 'asc' ? 1 : -1;
-      return 0;
-    });
-    return sorted;
-  }, [prospects, sortBy, sortDir, categoryFilter]);
-
-  const toggleSort = (field) => {
-    if (sortBy === field) {
-      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortBy(field);
-      setSortDir('asc');
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setRedraftResult(data);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not redraft pending emails: ' + e.message);
+    } finally {
+      setRedrafting(false);
     }
+  };
+
+  const handleDraftMissingPromos = async () => {
+    if (!confirm('Draft the courses/apps promo email for every already-emailed prospect who doesn\'t have one yet? They\'ll become immediately eligible in the queue (their 7-day gap has already passed).')) return;
+    setDraftingPromos(true);
+    setPromoDraftResult(null);
+    try {
+      const res = await fetch(`${FUNCTIONS_DIRECT_API}/draft-missing-promos`, { method: 'POST' });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Server returned an unexpected response (status ${res.status}) — try again in a moment.`);
+      }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setPromoDraftResult(data);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not draft missing promos: ' + e.message);
+    } finally {
+      setDraftingPromos(false);
+    }
+  };
+
+  const toggleQueueExpanded = (id) => {
+    setExpandedQueueIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
 
   return (
@@ -645,14 +852,324 @@ function OutreachAgent() {
         </div>
       )}
 
-      {/* Prospect Discovery */}
+      {/* Approval Queue — the review step: has a draft, needs a human look before it can send */}
+      <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <h2 className="text-lg font-semibold text-white">Prospect Queue ({approvalQueue.length}{(categoryFilter !== 'all' || emailOnlyFilter || nonIndianFilter || ukOnlyFilter || priorityOnlyFilter) ? ` of ${prospects.length}` : ''})</h2>
+          <p className="text-xs text-gray-500">Every prospect, one row each, sorted by what needs attention first. Fill in email/phone if missing, then approve — the hourly sender picks up approved ones automatically, paced through the day.</p>
+          <button
+            onClick={handleRedraftPending}
+            disabled={redrafting}
+            title="Regenerates every un-approved, un-sent draft using the current template — use this after a copy/persona change"
+            className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all"
+          >
+            {redrafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Repeat className="w-3.5 h-3.5" />}
+            <span>Refresh Pending Drafts</span>
+          </button>
+          <button
+            onClick={handleDraftMissingPromos}
+            disabled={draftingPromos}
+            title="Drafts the courses/apps promo email for every already-emailed prospect who doesn't have one yet"
+            className="flex items-center space-x-2 bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/50 disabled:opacity-50 text-purple-300 text-xs font-medium py-1.5 px-3 rounded-lg transition-all"
+          >
+            {draftingPromos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+            <span>Draft Missing Promos</span>
+          </button>
+        </div>
+        {redraftResult && (
+          <p className={`text-xs ${redraftResult.updated < redraftResult.attempted ? 'text-orange-400' : 'text-green-400'}`}>
+            Updated {redraftResult.updated} of {redraftResult.attempted} drafts.
+            {redraftResult.updated < redraftResult.attempted && ' The rest hit an AI rate limit and kept their old draft — click Refresh again to retry them.'}
+          </p>
+        )}
+        {promoDraftResult && (
+          <p className={`text-xs ${promoDraftResult.updated < promoDraftResult.attempted ? 'text-orange-400' : 'text-green-400'}`}>
+            Drafted promo emails for {promoDraftResult.updated} of {promoDraftResult.attempted} prospects.
+            {promoDraftResult.updated < promoDraftResult.attempted && ' The rest hit an AI rate limit — click again to retry them.'}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="text-xs bg-gray-900 border border-gray-700 text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+          >
+            <option value="all">All categories</option>
+            {Object.entries(OUTREACH_CATEGORIES).sort((a, b) => a[1].rank - b[1].rank).map(([key, cat]) => (
+              <option key={key} value={key}>{cat.label}</option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={emailOnlyFilter} onChange={(e) => setEmailOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+            Has Email
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={nonIndianFilter} onChange={(e) => setNonIndianFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+            Non-Indian
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={ukOnlyFilter} onChange={(e) => setUkOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+            UK Only
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+            <input type="checkbox" checked={priorityOnlyFilter} onChange={(e) => setPriorityOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+            Priority Only
+          </label>
+        </div>
+        {approvalQueue.length === 0 ? (
+          <p className="text-sm text-gray-500">Nothing waiting for review right now.</p>
+        ) : (
+          <div className="space-y-2">
+            {approvalQueue.map(({ p, kind }) => {
+              const isOpen = expandedQueueIds.has(p.id + kind);
+              const subjectField = kind === 'initial' ? 'draftEmailSubject' : kind === 'followup' ? 'followUpEmailSubject' : 'promoEmailSubject';
+              const bodyField = kind === 'initial' ? 'draftEmailBody' : kind === 'followup' ? 'followUpEmailBody' : 'promoEmailBody';
+              const subject = p[subjectField];
+              const body = p[bodyField];
+              const approveHandler = kind === 'initial' ? handleApproveEmail : kind === 'followup' ? handleApproveFollowUp : handleApprovePromo;
+              const unapproveHandler = kind === 'initial' ? handleUnapproveEmail : kind === 'followup' ? handleUnapproveFollowUp : handleUnapprovePromo;
+              const isApproved = kind === 'initial' ? !!p.emailApproved : kind === 'followup' ? !!p.followUpApproved : !!p.promoApproved;
+              const stage = computeSendStage(p, kind);
+              const priorityLabel = priorityInfo(p).label;
+              return (
+                <div key={p.id + kind} className="bg-gray-900/60 border border-gray-700 rounded-xl p-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {priorityLabel && (
+                      <span
+                        title={priorityLabel === 'Must Follow Up' ? `Follow-up date: ${p.followUpDate}` : 'Reachable and never contacted'}
+                        className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-bold border ${priorityLabel === 'Must Contact' ? 'bg-red-900/40 border-red-600 text-red-300' : 'bg-amber-900/40 border-amber-600 text-amber-300'}`}
+                      >
+                        {priorityLabel}
+                      </span>
+                    )}
+                    {kind === 'followup' && (
+                      <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-orange-900/40 border border-orange-600 text-orange-300">Follow-up</span>
+                    )}
+                    {kind === 'promo' && (
+                      <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-purple-900/40 border border-purple-600 text-purple-300">Promo</span>
+                    )}
+                    {stage && (
+                      <span
+                        title={
+                          stage === 'Sent' && p.emailSentAt ? `Sent ${new Date(p.emailSentAt).toLocaleString()}`
+                          : stage === '1st Follow-up Sent' && p.followUpSentAt ? `Sent ${new Date(p.followUpSentAt).toLocaleString()}`
+                          : stage === 'Promo Sent' && p.promoSentAt ? `Last sent ${new Date(p.promoSentAt).toLocaleString()} — next eligible ${p.promoEligibleDate || '—'}`
+                          : undefined
+                        }
+                        className={`flex-shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-bold border whitespace-nowrap ${SEND_STAGE_COLOR[stage]}`}
+                      >
+                        <span>{stage}</span>
+                        {stage === 'Sent' && p.emailSentAt && <span className="font-normal opacity-80">{new Date(p.emailSentAt).toLocaleDateString()}</span>}
+                        {stage === '1st Follow-up Sent' && p.followUpSentAt && <span className="font-normal opacity-80">{new Date(p.followUpSentAt).toLocaleDateString()}</span>}
+                        {stage === 'Promo Sent' && p.promoSentAt && <span className="font-normal opacity-80">{new Date(p.promoSentAt).toLocaleDateString()} · next {p.promoEligibleDate}</span>}
+                      </span>
+                    )}
+                    <span className="flex-shrink-0 flex items-center gap-1.5 flex-nowrap min-w-0">
+                      <a
+                        href={googleSearchLink(p.businessName, p.notes)}
+                        target="_blank" rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="flex-shrink-0 flex items-center gap-1.5 font-medium text-blue-400 hover:text-blue-300 underline whitespace-nowrap text-sm max-w-[176px] truncate"
+                        title={p.businessName}
+                      >
+                        <Search className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span className="truncate">{p.businessName}</span>
+                      </a>
+                      {isUK(p) && (
+                        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-indigo-900/40 border border-indigo-600 text-indigo-300">UK</span>
+                      )}
+                      {contactedVia(p) ? (
+                        <span className="flex-shrink-0 max-w-[140px] truncate inline-block text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-emerald-900/40 border border-emerald-600 text-emerald-300" title="Already reached via this channel">
+                          &#10003; {contactedVia(p)}
+                        </span>
+                      ) : (
+                        <span className="flex-shrink-0 inline-block text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-gray-800 border border-gray-600 text-gray-400">Not contacted</span>
+                      )}
+                    </span>
+                    {!p.email && (
+                      <span className="flex-shrink-0 text-[10px] text-gray-500 italic">no email — see Details</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap sm:ml-auto">
+                    {p.whatsapp && (
+                      <a
+                        href={whatsappLink(p.whatsapp, p.draftMessage)}
+                        target="_blank" rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        title={p.whatsappSentAt ? `Contacted via WhatsApp ${new Date(p.whatsappSentAt).toLocaleDateString()} — click to open again` : 'Open WhatsApp'}
+                        className={`flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg border transition-all ${p.whatsappSentAt ? 'bg-green-900/40 border-green-700/50 text-green-300' : 'bg-gray-700 hover:bg-green-900/60 border-gray-600 hover:border-green-700/50 text-gray-300 hover:text-green-300'}`}
+                      >
+                        <Phone className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); p.socialSentAt ? handleUnmarkSocialSent(p) : handleMarkSocialSent(p); }}
+                      title={p.socialSentAt ? `Contacted via FB/Instagram ${new Date(p.socialSentAt).toLocaleDateString()} — click to undo` : 'Mark as contacted via Facebook/Instagram outside the app'}
+                      className={`flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg border transition-all ${p.socialSentAt ? 'bg-pink-900/40 border-pink-700/50 text-pink-300' : 'bg-gray-700 hover:bg-pink-900/60 border-gray-600 hover:border-pink-700/50 text-gray-300 hover:text-pink-300'}`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => toggleQueueExpanded(p.id + kind)}
+                      className="flex-shrink-0 whitespace-nowrap text-xs text-gray-400 hover:text-white underline"
+                    >
+                      {isOpen ? 'Hide details' : 'Details'}
+                    </button>
+                    {kind === 'initial' && p.website && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleResearch(p); }}
+                        disabled={busyId === p.id + '-research'}
+                        title={p.research ? `Researched ${new Date(p.researchedAt).toLocaleDateString()} (${p.researchConfidence || 'Medium'} confidence) — click to re-research and redraft` : "Browse this prospect's website and ground the draft in what's actually there"}
+                        className="flex-shrink-0 flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all whitespace-nowrap"
+                      >
+                        {busyId === p.id + '-research' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                        <span>{p.research ? 'Re-research' : 'Research'}</span>
+                      </button>
+                    )}
+                    {kind === 'initial' && !p.website && (
+                      <input
+                        className="flex-shrink-0 w-40 bg-gray-900 border border-blue-700/50 rounded-lg px-2 py-1.5 text-white text-xs outline-none placeholder:text-blue-300/60"
+                        placeholder="+ Add website for Research"
+                        title="Add a website to unlock the Research button"
+                        onClick={e => e.stopPropagation()}
+                        onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                        onBlur={e => { if (e.target.value.trim()) handleFieldChange(p.id, 'website', e.target.value.trim()); }}
+                      />
+                    )}
+                    {!body ? (
+                      <button
+                        onClick={() => handleDraftEmail(p)}
+                        disabled={busyId === p.id + '-email'}
+                        className="flex-shrink-0 flex items-center space-x-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all whitespace-nowrap"
+                      >
+                        {busyId === p.id + '-email' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        <span>Draft Email</span>
+                      </button>
+                    ) : isApproved ? (
+                      <button
+                        onClick={() => unapproveHandler(p)}
+                        className="flex-shrink-0 whitespace-nowrap text-xs text-gray-400 hover:text-red-400 underline"
+                      >
+                        Remove
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => approveHandler(p)}
+                        disabled={!p.email}
+                        title={!p.email ? 'Add an email address first' : ''}
+                        className="flex-shrink-0 flex items-center space-x-1.5 bg-green-600 hover:bg-green-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all whitespace-nowrap"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Approve</span>
+                      </button>
+                    )}
+                    <select
+                      value={p.status}
+                      onClick={e => e.stopPropagation()}
+                      onChange={e => setStatus(p, e.target.value)}
+                      className={`flex-shrink-0 rounded-lg text-xs font-semibold py-1.5 px-2 outline-none ${statusColor[p.status] || 'bg-gray-700 text-gray-200'}`}
+                    >
+                      {STATUSES.map(s => <option key={s} value={s} className="bg-gray-800 text-white font-normal">{STATUS_LABELS[s] || s}</option>)}
+                    </select>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); deleteProspect(p.id); }}
+                      className="flex-shrink-0 text-gray-500 hover:text-red-400 p-1"
+                      title="Delete this prospect"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  </div>
+                  {isOpen && (
+                    <div className="space-y-1.5 mt-2" onClick={e => e.stopPropagation()}>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        <input
+                          className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-xs outline-none"
+                          placeholder="Email"
+                          value={p.email || ''}
+                          onChange={e => handleFieldChange(p.id, 'email', e.target.value)}
+                        />
+                        <input
+                          className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-xs outline-none"
+                          placeholder="WhatsApp"
+                          value={p.whatsapp || ''}
+                          onChange={e => handleFieldChange(p.id, 'whatsapp', e.target.value)}
+                        />
+                        <input
+                          className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-xs outline-none"
+                          placeholder="Website"
+                          value={p.website || ''}
+                          onChange={e => handleFieldChange(p.id, 'website', e.target.value)}
+                        />
+                        <input
+                          className="bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-xs outline-none"
+                          placeholder="Instagram"
+                          value={p.instagram || ''}
+                          onChange={e => handleFieldChange(p.id, 'instagram', e.target.value)}
+                        />
+                      </div>
+                      <textarea
+                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-xs outline-none resize-y"
+                        rows={2}
+                        placeholder="Notes"
+                        value={p.notes || ''}
+                        onChange={e => handleFieldChange(p.id, 'notes', e.target.value)}
+                      />
+                      {p.research && (
+                        <div className="bg-blue-950/30 border border-blue-800/40 rounded-lg p-2 text-xs text-blue-100">
+                          <div className="flex items-center space-x-1.5 mb-1 text-blue-300 font-medium">
+                            <Search className="w-3 h-3" />
+                            <span>Website research ({p.researchConfidence || 'Medium'} confidence{p.researchedAt ? `, ${new Date(p.researchedAt).toLocaleDateString()}` : ''})</span>
+                          </div>
+                          <p className="whitespace-pre-wrap text-blue-100/90">{p.research}</p>
+                        </div>
+                      )}
+                      {body && (
+                        <>
+                          <input
+                            className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm font-medium outline-none"
+                            value={subject || ''}
+                            onChange={e => handleFieldChange(p.id, subjectField, e.target.value)}
+                          />
+                          <textarea
+                            className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none resize-y"
+                            rows={8}
+                            value={body || ''}
+                            onChange={e => handleFieldChange(p.id, bodyField, e.target.value)}
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Prospect Discovery — collapsed by default; runs automatically every day
+          regardless, so this is only for manually kicking off an extra run or
+          changing what/where it searches. Most days there's nothing to do here. */}
+      <div className="bg-gray-800 rounded-2xl shadow-xl border border-gray-700 overflow-hidden">
+        <button
+          onClick={() => setDiscoveryExpanded(v => !v)}
+          className="w-full flex items-center justify-between gap-3 p-6 text-left hover:bg-gray-700/30 transition-all"
+        >
+          <div className="flex items-center space-x-2">
+            <Compass className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-lg font-semibold text-white">Find New Prospects</h2>
+            <span className="text-xs text-gray-500">(runs automatically every day — open this only to search manually or change settings)</span>
+          </div>
+          {discoveryExpanded ? <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" />}
+        </button>
+        {discoveryExpanded && (
+      <div className="px-6 pb-6 space-y-6">
       {settings && (
-        <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
+        <div className="bg-gray-900/40 rounded-2xl p-6 space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center space-x-2">
-              <Compass className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-lg font-semibold text-white">Find Today's Prospects</h2>
-            </div>
+            <h2 className="text-base font-semibold text-white">Local Businesses</h2>
             <p className="text-xs text-gray-500">
               Auto-runs daily at {settings.dailyRunHour}:00 IST via Cloud Scheduler.
               {settings.lastRunDate && ` Last run: ${settings.lastRunDate}.`}
@@ -803,149 +1320,37 @@ function OutreachAgent() {
         </div>
       )}
 
-      {/* Daily Digest */}
+      {/* Directory Import — therapyin.london */}
       <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
-        <h2 className="text-lg font-semibold text-white">
-          Today's Outreach — {new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <DigestCard icon={<AlertCircle className="w-5 h-5 text-red-400" />} label={`${digest.dueFollowUps.length} follow-ups due`} color="border-red-800/50 bg-red-900/10">
-            {digest.dueFollowUps.map(p => (
-              <div key={p.id} className="text-sm text-gray-300">{p.businessName} — {p.status}, Day {daysSince(p.lastContactDate || p.createdAt)}</div>
-            ))}
-            {digest.dueFollowUps.length === 0 && <div className="text-sm text-gray-500">Nothing due today.</div>}
-          </DigestCard>
-          <DigestCard icon={<CheckCircle2 className="w-5 h-5 text-green-400" />} label={`${digest.interested.length} interested`} color="border-green-800/50 bg-green-900/10">
-            {digest.interested.map(p => (
-              <div key={p.id} className="text-sm text-gray-300">{p.businessName} — {p.recommendedService || 'discuss next steps'}</div>
-            ))}
-            {digest.interested.length === 0 && <div className="text-sm text-gray-500">No interested leads yet.</div>}
-          </DigestCard>
-          <DigestCard icon={<Star className="w-5 h-5 text-yellow-400" />} label={`${digest.newToday.length} new prospects today`} color="border-yellow-800/50 bg-yellow-900/10">
-            {digest.newToday.map(p => (
-              <div key={p.id} className="text-sm text-gray-300">{p.businessName}</div>
-            ))}
-            {digest.newToday.length === 0 && <div className="text-sm text-gray-500">No new prospects added today.</div>}
-          </DigestCard>
+        <div className="flex items-center space-x-2">
+          <Compass className="w-5 h-5 text-blue-400" />
+          <h2 className="text-lg font-semibold text-white">Import Therapists — therapyin.london</h2>
         </div>
-      </div>
-
-      {/* Prospect List */}
-      <div className="bg-gray-800 rounded-2xl shadow-xl border border-gray-700 overflow-hidden">
-        <div className="p-6 border-b border-gray-700 space-y-3">
-          <div className="flex items-center space-x-2">
-            <Users className="w-5 h-5 text-emerald-400" />
-            <h2 className="text-lg font-semibold text-white">Prospect Pipeline ({sortedProspects.length}{categoryFilter !== 'all' ? ` of ${prospects.length}` : ''})</h2>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setCategoryFilter('all')}
-              className={`text-xs px-3 py-1.5 rounded-full border transition-all ${categoryFilter === 'all' ? 'bg-emerald-900/40 border-emerald-600 text-emerald-300' : 'bg-gray-900 border-gray-700 text-gray-400'}`}
-            >
-              All ({prospects.length})
-            </button>
-            {Object.entries(OUTREACH_CATEGORIES).sort((a, b) => a[1].rank - b[1].rank).map(([key, cat]) => (
-              <button
-                key={key}
-                onClick={() => setCategoryFilter(key)}
-                className={`text-xs px-3 py-1.5 rounded-full border transition-all ${categoryFilter === key ? cat.color : 'bg-gray-900 border-gray-700 text-gray-400'}`}
-              >
-                {cat.label} ({categoryCounts[key] || 0})
-              </button>
-            ))}
-          </div>
-          {selectedIds.size > 0 && (
-            <div className="flex items-center gap-3 bg-green-900/20 border border-green-800/50 rounded-lg p-3">
-              <span className="text-sm text-green-300">{selectedIds.size} selected</span>
-              <button
-                onClick={handleBulkSendWhatsApp}
-                className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-all"
-              >
-                <Phone className="w-3.5 h-3.5" />
-                <span>Open WhatsApp for {selectedIds.size} Selected</span>
-              </button>
-              <button onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-400 hover:text-white">Clear</button>
-            </div>
-          )}
-        </div>
-        {loading ? (
-          <div className="p-10 text-center text-gray-500">Loading...</div>
-        ) : prospects.length === 0 ? (
-          <div className="p-10 text-center text-gray-500">No prospects yet. Click "Add Prospect" to start.</div>
-        ) : (
-          <div>
-            <table className="w-full table-fixed text-sm">
-              <colgroup>
-                <col className="w-[4%]" />
-                <col className="w-[17%]" />
-                <col className="w-[8%]" />
-                <col className="w-[10%]" />
-                <col className="w-[7%]" />
-                <col className="w-[8%]" />
-                <col className="w-[11%]" />
-                <col className="w-[11%]" />
-                <col className="w-[7%]" />
-                <col className="w-[7%]" />
-                <col className="w-[4%]" />
-              </colgroup>
-              <thead>
-                <tr className="border-b border-gray-700 text-left text-gray-400">
-                  <th className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      className="cursor-pointer"
-                      checked={sortedProspects.filter(eligibleForWhatsAppSend).length > 0 && sortedProspects.filter(eligibleForWhatsAppSend).every(p => selectedIds.has(p.id))}
-                      onChange={toggleSelectAllVisible}
-                      title="Select all with a WhatsApp draft ready"
-                    />
-                  </th>
-                  <SortableTh field="businessName" label="Business" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <SortableTh field="businessType" label="Type" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <SortableTh field="category" label="Category" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <SortableTh field="status" label="Status" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <th className="px-4 py-3 font-medium">Contact</th>
-                  <th className="px-4 py-3 font-medium">Email</th>
-                  <th className="px-4 py-3 font-medium">WhatsApp</th>
-                  <SortableTh field="lastContactDate" label="Last Contact" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <SortableTh field="followUpDate" label="Next Follow-up" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
-                  <th className="px-4 py-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedProspects.map(p => (
-                  <ProspectRow
-                    key={p.id}
-                    p={p}
-                    selected={selectedIds.has(p.id)}
-                    onToggleSelect={() => toggleSelect(p.id)}
-                    selectable={eligibleForWhatsAppSend(p)}
-                    expanded={expandedId === p.id}
-                    onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
-                    busyId={busyId}
-                    onSuggestGaps={() => handleSuggestGaps(p)}
-                    onDraftMessage={() => handleDraftMessage(p)}
-                    onDraftEmail={() => handleDraftEmail(p)}
-                    onSendEmail={() => handleSendEmail(p)}
-                    onApproveEmail={() => handleApproveEmail(p)}
-                    onUnapproveEmail={() => handleUnapproveEmail(p)}
-                    onMarkEmailSentManually={() => handleMarkEmailSentManually(p)}
-                    onUnmarkEmailSent={() => handleUnmarkEmailSent(p)}
-                    onMarkWhatsAppSent={() => handleMarkWhatsAppSent(p)}
-                    onUnmarkWhatsAppSent={() => handleUnmarkWhatsAppSent(p)}
-                    onMarkWhatsAppInvalid={() => handleMarkWhatsAppInvalid(p)}
-                    onUnmarkWhatsAppInvalid={() => handleUnmarkWhatsAppInvalid(p)}
-                    onScrapeEmail={() => handleScrapeOneEmail(p)}
-                    onMarkContacted={() => markContacted(p)}
-                    onSetStatus={(s) => setStatus(p, s)}
-                    onDelete={() => deleteProspect(p.id)}
-                    onFieldChange={(field, value) => handleFieldChange(p.id, field, value)}
-                  />
-                ))}
-              </tbody>
-            </table>
+        <p className="text-xs text-gray-500">
+          Pulls therapist names and public profile links from their sitemap (their /results search page is off-limits per robots.txt, so this only reads what's explicitly allowed). No email/phone comes back — each is flagged "Needs contact info" until you open their profile and find a way to reach out.
+        </p>
+        <button
+          onClick={handleImportTherapyDirectory}
+          disabled={importingDirectory}
+          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 px-5 rounded-lg transition-all"
+        >
+          {importingDirectory ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
+          <span>Import Therapists Now</span>
+        </button>
+        {directoryError && (
+          <div className="text-sm text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg p-3">{directoryError}</div>
+        )}
+        {directoryResultCount !== null && !directoryError && (
+          <div className="text-sm text-blue-400 bg-blue-900/20 border border-blue-800/50 rounded-lg p-3">
+            Added {directoryResultCount} new prospect{directoryResultCount === 1 ? '' : 's'}.
           </div>
         )}
       </div>
+      </div>
+        )}
+      </div>
+
+
 
       {/* Add Prospect Modal */}
       <AnimatePresence>
@@ -1015,31 +1420,6 @@ function StatCard({ icon, value, label }) {
   );
 }
 
-function SortableTh({ field, label, sortBy, sortDir, onSort }) {
-  const active = sortBy === field;
-  return (
-    <th
-      onClick={() => onSort(field)}
-      className={`px-4 py-3 font-medium cursor-pointer select-none hover:text-white transition-colors ${active ? 'text-white' : ''}`}
-    >
-      <span className="flex items-center space-x-1">
-        <span>{label}</span>
-        <ArrowUpDown className={`w-3 h-3 ${active ? 'opacity-100' : 'opacity-30'}`} />
-        {active && <span className="text-[10px]">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-      </span>
-    </th>
-  );
-}
-
-function DigestCard({ icon, label, color, children }) {
-  return (
-    <div className={`rounded-xl border p-4 space-y-2 ${color}`}>
-      <div className="flex items-center space-x-2 font-semibold text-white">{icon}<span>{label}</span></div>
-      <div className="space-y-1">{children}</div>
-    </div>
-  );
-}
-
 function Field({ label, value, onChange }) {
   return (
     <div>
@@ -1049,343 +1429,6 @@ function Field({ label, value, onChange }) {
         value={value}
         onChange={e => onChange(e.target.value)}
       />
-    </div>
-  );
-}
-
-function ProspectRow({ p, selected, onToggleSelect, selectable, expanded, onToggle, busyId, onSuggestGaps, onDraftMessage, onDraftEmail, onSendEmail, onApproveEmail, onUnapproveEmail, onMarkEmailSentManually, onUnmarkEmailSent, onMarkWhatsAppSent, onUnmarkWhatsAppSent, onMarkWhatsAppInvalid, onUnmarkWhatsAppInvalid, onScrapeEmail, onMarkContacted, onSetStatus, onDelete, onFieldChange }) {
-  return (
-    <>
-      <tr className="border-b border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={onToggle}>
-        <td className="px-4 py-3 align-top" onClick={e => e.stopPropagation()}>
-          {selectable && (
-            <input type="checkbox" className="cursor-pointer" checked={selected} onChange={onToggleSelect} />
-          )}
-        </td>
-        <td className="px-4 py-3 align-top">
-          <div className="flex items-start space-x-2 min-w-0">
-            {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />}
-            <span className="font-medium text-white break-words">{p.businessName}</span>
-          </div>
-        </td>
-        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.businessType}</td>
-        <td className="px-4 py-3 align-top">
-          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${OUTREACH_CATEGORIES[deriveCategory(p)].color}`}>
-            {OUTREACH_CATEGORIES[deriveCategory(p)].label}
-          </span>
-        </td>
-        <td className="px-4 py-3 align-top">
-          <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${statusColor[p.status] || 'bg-gray-700 text-gray-300'}`}>{p.status}</span>
-        </td>
-        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.contactPerson || '—'}</td>
-        <td className="px-4 py-3 text-gray-400 break-all align-top">
-          {p.email ? p.email : p.needsManualContact ? (
-            <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-900/40 border border-orange-700/50 text-orange-300">
-              Needs contact info
-            </span>
-          ) : '—'}
-        </td>
-        <td className="px-4 py-3 align-top">
-          {p.whatsapp ? (
-            <span className="inline-flex items-start gap-1.5">
-              {p.whatsappSentAt && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0 mt-0.5" />}
-              <a
-                href={whatsappLink(p.whatsapp, p.draftMessage)}
-                target="_blank" rel="noopener noreferrer"
-                onClick={e => e.stopPropagation()}
-                className="text-green-400 hover:text-green-300 underline break-words"
-              >
-                {p.whatsapp}
-              </a>
-            </span>
-          ) : <span className="text-gray-500">—</span>}
-        </td>
-        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.lastContactDate || '—'}</td>
-        <td className="px-4 py-3 text-gray-400 break-words align-top">{p.followUpDate || '—'}</td>
-        <td className="px-4 py-3 align-top">
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-gray-500 hover:text-red-400">
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </td>
-      </tr>
-      <AnimatePresence>
-        {expanded && (
-          <tr>
-            <td colSpan={11} className="p-0 border-b border-gray-700">
-              <motion.div
-                initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="p-5 space-y-4 bg-gray-900/40">
-                  {p.needsManualContact && !p.email && !p.whatsapp && (
-                    <div className="text-xs text-orange-300 bg-orange-900/20 border border-orange-800/50 rounded-lg p-3">
-                      Sourced from web search — no phone/email available automatically. Look up their contact info (their profile/website) and paste it in below.
-                    </div>
-                  )}
-                  {!p.email && !p.whatsapp && !p.website && (
-                    <div
-                      className="text-xs text-blue-300 bg-blue-900/20 border border-blue-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
-                      onClick={e => e.stopPropagation()}
-                    >
-                      <span>No contact info or website on file — search for their social media presence (Facebook/Instagram/X/YouTube) or website.</span>
-                      <a
-                        href={googleSearchLink(p.businessName, p.notes)}
-                        target="_blank" rel="noopener noreferrer"
-                        className="flex-shrink-0 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all whitespace-nowrap"
-                      >
-                        Search Online
-                      </a>
-                    </div>
-                  )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div onClick={e => e.stopPropagation()}>
-                      <span className="text-gray-500">{detectLinkType(p.website) || 'Website'}: </span>
-                      {p.website ? (
-                        <a href={p.website} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline break-all">
-                          {p.website}
-                        </a>
-                      ) : <span className="text-gray-300">—</span>}
-                    </div>
-                    <InfoLine label="Instagram" value={p.instagram} />
-                    <div onClick={e => e.stopPropagation()}>
-                      <label className="block text-xs text-gray-500 mb-1">Email</label>
-                      <div className="flex gap-2">
-                        <input
-                          className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
-                          value={p.email || ''}
-                          placeholder="paste email here"
-                          onChange={e => onFieldChange('email', e.target.value)}
-                        />
-                        {p.website && !p.email && (
-                          <button
-                            onClick={onScrapeEmail}
-                            disabled={busyId === p.id + '-scrape'}
-                            className="flex-shrink-0 bg-blue-900/40 hover:bg-blue-900/60 border border-blue-700/50 disabled:opacity-50 text-blue-300 text-xs font-medium px-3 rounded-lg transition-all"
-                            title="Check their website for a contact email"
-                          >
-                            {busyId === p.id + '-scrape' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Find from site'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div onClick={e => e.stopPropagation()}>
-                      <label className="block text-xs text-gray-500 mb-1">WhatsApp</label>
-                      <input
-                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-2 text-white text-sm outline-none"
-                        value={p.whatsapp || ''}
-                        placeholder="paste phone number here"
-                        onChange={e => onFieldChange('whatsapp', e.target.value)}
-                      />
-                    </div>
-                    <InfoLine label="Email Opened" value={p.emailOpenedAt ? new Date(p.emailOpenedAt).toLocaleString() : null} />
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={onSuggestGaps}
-                      disabled={busyId === p.id + '-gaps'}
-                      className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                    >
-                      {busyId === p.id + '-gaps' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                      <span>Suggest Digital Gaps</span>
-                    </button>
-                    <button
-                      onClick={onDraftMessage}
-                      disabled={busyId === p.id + '-msg'}
-                      className="flex items-center space-x-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                    >
-                      {busyId === p.id + '-msg' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-                      <span>Draft WhatsApp Message</span>
-                    </button>
-                    <button
-                      onClick={onDraftEmail}
-                      disabled={busyId === p.id + '-email'}
-                      className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                    >
-                      {busyId === p.id + '-email' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-                      <span>Draft Email</span>
-                    </button>
-                    {p.email && (
-                      p.emailSentAt ? (
-                        <button
-                          onClick={onUnmarkEmailSent}
-                          className="flex items-center space-x-2 bg-green-900/40 hover:bg-green-900/60 border border-green-700/50 text-green-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Email Sent {new Date(p.emailSentAt).toLocaleDateString()}</span>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={onMarkEmailSentManually}
-                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium py-2 px-3 rounded-lg transition-all"
-                          title="Use this if you wrote and sent the email yourself outside the app"
-                        >
-                          <span>Mark Email Sent Manually</span>
-                        </button>
-                      )
-                    )}
-                    {p.whatsapp && p.draftMessage && (
-                      <a
-                        href={whatsappLink(p.whatsapp, p.draftMessage)}
-                        target="_blank" rel="noopener noreferrer"
-                        className="flex items-center space-x-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                      >
-                        <Phone className="w-4 h-4" />
-                        <span>Open in WhatsApp</span>
-                      </a>
-                    )}
-                    {p.whatsapp && (
-                      p.whatsappSentAt ? (
-                        <button
-                          onClick={onUnmarkWhatsAppSent}
-                          className="flex items-center space-x-2 bg-green-900/40 hover:bg-green-900/60 border border-green-700/50 text-green-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>WhatsApp Sent {new Date(p.whatsappSentAt).toLocaleDateString()}</span>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={onMarkWhatsAppSent}
-                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Mark WhatsApp Sent</span>
-                        </button>
-                      )
-                    )}
-                    {p.whatsapp && (
-                      p.whatsappInvalid ? (
-                        <button
-                          onClick={onUnmarkWhatsAppInvalid}
-                          className="flex items-center space-x-2 bg-red-900/40 hover:bg-red-900/60 border border-red-700/50 text-red-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                        >
-                          <X className="w-4 h-4" />
-                          <span>Not on WhatsApp</span>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={onMarkWhatsAppInvalid}
-                          className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-medium py-2 px-3 rounded-lg transition-all"
-                          title="Click if you tried opening WhatsApp and got 'number isn't on WhatsApp'"
-                        >
-                          <span>Mark Not on WhatsApp</span>
-                        </button>
-                      )
-                    )}
-                    {p.status === 'New' && (
-                      <button onClick={onMarkContacted} className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all">
-                        Mark Contacted
-                      </button>
-                    )}
-                    <select
-                      className="bg-gray-800 border border-gray-700 rounded-lg text-sm text-white py-2 px-3 outline-none"
-                      value={p.status}
-                      onChange={e => onSetStatus(e.target.value)}
-                    >
-                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-
-                  {p.digitalGaps?.length > 0 && (
-                    <div>
-                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Possible Opportunities</div>
-                      <ul className="list-disc list-inside text-sm text-gray-300 space-y-0.5">
-                        {p.digitalGaps.map((g, i) => <li key={i}>{g}</li>)}
-                      </ul>
-                      {p.recommendedService && (
-                        <div className="text-sm text-emerald-400 mt-2">Recommended: {p.recommendedService}</div>
-                      )}
-                    </div>
-                  )}
-
-                  {p.draftMessage !== undefined && p.draftMessage !== '' && (
-                    <div>
-                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draft WhatsApp Message (edit before sending)</div>
-                      <textarea
-                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
-                        rows={4}
-                        value={p.draftMessage}
-                        onChange={e => onFieldChange('draftMessage', e.target.value)}
-                      />
-                      <p className="text-xs text-gray-500 mt-1">Copy this into WhatsApp yourself, then click "Mark Contacted".</p>
-                    </div>
-                  )}
-
-                  {p.draftEmailBody !== undefined && p.draftEmailBody !== '' && (
-                    <div className="space-y-2">
-                      <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Draft Email (edit before sending)</div>
-                      <input
-                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none"
-                        value={p.draftEmailSubject || ''}
-                        onChange={e => onFieldChange('draftEmailSubject', e.target.value)}
-                        placeholder="Subject"
-                      />
-                      <textarea
-                        className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none font-mono"
-                        rows={8}
-                        value={p.draftEmailBody}
-                        onChange={e => onFieldChange('draftEmailBody', e.target.value)}
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={onSendEmail}
-                          disabled={!p.email || busyId === p.id + '-send'}
-                          className="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-all"
-                        >
-                          {busyId === p.id + '-send' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                          <span>Send Now{p.email ? ` to ${p.email}` : ' (no email on file)'}</span>
-                        </button>
-                        {p.emailSentAt ? (
-                          <span className="text-xs text-gray-500">Sent {new Date(p.emailSentAt).toLocaleString()}</span>
-                        ) : p.emailApproved ? (
-                          <button
-                            onClick={onUnapproveEmail}
-                            className="flex items-center space-x-2 bg-orange-900/40 hover:bg-orange-900/60 border border-orange-700/50 text-orange-300 text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Queued — click to unqueue</span>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={onApproveEmail}
-                            disabled={!p.email}
-                            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium py-2 px-4 rounded-lg transition-all"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Approve for Daily Queue</span>
-                          </button>
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        "Send Now" sends immediately. "Approve for Daily Queue" sends it automatically in a small paced batch over the coming days (settings below) — for when you can't check in daily.
-                      </p>
-                    </div>
-                  )}
-
-                  <div>
-                    <div className="text-xs uppercase tracking-wider text-gray-500 mb-1">Notes</div>
-                    <textarea
-                      className="w-full bg-gray-900 border border-gray-700 rounded-xl p-3 text-white text-sm outline-none resize-none"
-                      rows={2}
-                      value={p.notes || ''}
-                      onChange={e => onFieldChange('notes', e.target.value)}
-                    />
-                  </div>
-                </div>
-              </motion.div>
-            </td>
-          </tr>
-        )}
-      </AnimatePresence>
-    </>
-  );
-}
-
-function InfoLine({ label, value }) {
-  return (
-    <div>
-      <span className="text-gray-500">{label}: </span>
-      <span className="text-gray-300">{value || '—'}</span>
     </div>
   );
 }
