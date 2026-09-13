@@ -3,7 +3,11 @@ import io from 'socket.io-client';
 import { Play, Square, CheckCircle, Image as ImageIcon, Link as LinkIcon, List, Sparkles, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const socket = io('http://localhost:3001');
+// This page drives a local Playwright bot over the local dev server's
+// socket.io connection — there's no equivalent deployed backend in
+// production, so connecting there only produced an endless, console-flooding
+// reconnect loop against a socket that will never exist.
+const socket = import.meta.env.PROD ? null : io('http://localhost:3001');
 
 function FBAgent() {
   const [status, setStatus] = useState({ state: 'idle', logs: [] });
@@ -68,6 +72,7 @@ https://www.facebook.com/groups/881782805675703/`);
   const logsEndRef = useRef(null);
 
   useEffect(() => {
+    if (!socket) return;
     socket.on('status', (data) => setStatus(data));
     socket.on('state', (state) => setStatus(prev => ({ ...prev, state })));
     socket.on('log', (log) => setStatus(prev => ({ ...prev, logs: [...prev.logs, log] })));
