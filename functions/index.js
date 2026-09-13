@@ -542,7 +542,10 @@ app.post('/api/outreach/find-freelancers', async (req, res) => {
   }
 });
 
-exports.api = onRequest({ secrets: API_SECRETS, cors: true, timeoutSeconds: 300 }, app);
+// 256MiB (the default) was getting OOM-killed on the /research endpoint —
+// fetching a few pages of a prospect's site plus the rest of the app's normal
+// footprint (express, openai, firebase-admin) pushed past it.
+exports.api = onRequest({ secrets: API_SECRETS, cors: true, timeoutSeconds: 300, memory: '512MiB' }, app);
 
 exports.dailyProspectDiscovery = onSchedule(
   { schedule: 'every day 08:00', timeZone: 'Asia/Kolkata', secrets: DISCOVERY_SECRETS, timeoutSeconds: 540 },
