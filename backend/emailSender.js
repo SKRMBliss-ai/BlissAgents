@@ -35,31 +35,18 @@ const markdownToHtml = (markdown) => {
 // already uses — shared across projects, not duplicated.
 const EMAIL_HEADER_BADGE = 'DIGITAL OFFERINGS BY SOULFUL INTELLIGENCE STUDIO';
 
-// CSS background-image on a <td> is stripped by Gmail and several mobile
-// clients, so the photo silently disappeared there even though it rendered
-// fine in previewers that support it. A plain <img> tag renders everywhere,
-// so the photo is now a real image above the quote card instead of a CSS
-// background behind it.
-// The overlay panel is position:absolute + a dimming CSS filter on the photo —
-// both ignored by Outlook's Word rendering engine, so there it simply falls
-// back to the old stacked layout (full-brightness photo, then the caption
-// block right below it) instead of breaking or hiding the text.
+// A single flat, pre-composited image (crop, dimming, and the quote text all
+// baked in at build time — see functions' scratch banner-build script) rather
+// than a plain photo layered with CSS crop/overlay/filter tricks. Those tricks
+// rendered fine in Gmail's preview but "new Outlook" strips position:absolute
+// and overflow:hidden from email HTML as an anti-abuse measure, which broke
+// both the crop and the text overlay there. A plain <img> has no such
+// failure mode — it renders identically everywhere.
 const signatureBanner = () => `
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" width="100%" style="max-width:560px;margin:0 auto 20px;">
       <tr>
         <td style="border-radius:12px;border:1px solid rgba(193,121,58,0.3);overflow:hidden;">
-          <div style="position:relative;height:220px;overflow:hidden;border-radius:12px;">
-            <img src="https://firebasestorage.googleapis.com/v0/b/awakened-path-2026.firebasestorage.app/o/Marketting%2FShSm1.png?alt=media" alt="Shruti &amp; Smriti" width="560" style="display:block;width:100%;max-width:560px;height:auto;margin-top:-95px;filter:brightness(0.55);-webkit-filter:brightness(0.55);" />
-            <div style="position:absolute;left:0;right:0;bottom:0;background-color:rgba(250,241,226,0.75);padding:16px 16px 18px;text-align:center;border-radius:0 0 12px 12px;">
-              <div style="margin-bottom:8px;font-size:16px;opacity:0.7;">&#9995;</div>
-              <p style="margin:0 auto 8px;font-size:13px;font-style:italic;color:#2B2620;line-height:1.4;font-family:Georgia,serif;max-width:95%;">
-                "Take what you need. Give what you can. Everything here is offered pay-what-you-feel."
-              </p>
-              <p style="margin:0;font-size:9px;font-weight:600;color:#c1793a;text-transform:uppercase;letter-spacing:1px;font-family:sans-serif;">
-                &mdash; The Soulful Intelligence promise
-              </p>
-            </div>
-          </div>
+          <img src="https://firebasestorage.googleapis.com/v0/b/bliss-agents-outreach.firebasestorage.app/o/email-assets%2Fsignature-banner.png?alt=media&amp;token=74f9195a-d929-49c1-8610-a98664d98091" alt="Shruti &amp; Smriti — Take what you need. Give what you can. Everything here is offered pay-what-you-feel. — The Soulful Intelligence promise" width="560" style="display:block;width:100%;max-width:560px;height:auto;border-radius:12px;" />
         </td>
       </tr>
     </table>`;
@@ -82,7 +69,15 @@ const qrCodesBanner = () => `
       </tr>
     </table>`;
 
-const wrapInBrandedTemplate = (bodyHtml) => `
+// A one-off visual mockup of the idea being pitched (e.g. "[Business] Mind
+// Gym" app screen), attached per-prospect from the outreach UI — optional,
+// so most emails render with no gap here at all.
+const prototypeImageBlock = (url) => url ? `
+    <div style="margin:24px 0;text-align:center;">
+      <img src="${url}" alt="A look at what we had in mind" width="496" style="display:block;width:100%;max-width:496px;height:auto;margin:0 auto;border-radius:12px;border:1px solid #e3d2b3;" />
+    </div>` : '';
+
+const wrapInBrandedTemplate = (bodyHtml, prototypeImageUrl) => `
 <div style="background:#f5ead9;padding:24px 12px;font-family:Georgia,'Times New Roman',serif;">
   <div style="max-width:560px;margin:0 auto;background:#faf1e2;border:1px solid #e3d2b3;border-radius:16px;padding:32px;">
     <div style="text-align:center;margin-bottom:20px;">
@@ -90,6 +85,7 @@ const wrapInBrandedTemplate = (bodyHtml) => `
       <span style="display:inline-block;background:#f3ddb9;color:#c1793a;font-size:11px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;padding:4px 12px;border-radius:999px;">${EMAIL_HEADER_BADGE}</span>
     </div>
     ${bodyHtml}
+    ${prototypeImageBlock(prototypeImageUrl)}
     <div style="margin-top:28px;padding-top:16px;border-top:1px solid #e3d2b3;text-align:center;">
       ${signatureBanner()}
       ${qrCodesBanner()}
@@ -119,12 +115,12 @@ const getTransporter = () => nodemailer.createTransport({
   },
 });
 
-const sendEmail = async ({ to, subject, body, fromName, trackingUrl }) => {
+const sendEmail = async ({ to, subject, body, fromName, trackingUrl, prototypeImageUrl }) => {
   const transporter = getTransporter();
   await transporter.verify();
 
   const fromAddress = (process.env.EMAIL_USER || '').trim();
-  const templated = wrapInBrandedTemplate(markdownToHtml(body));
+  const templated = wrapInBrandedTemplate(markdownToHtml(body), prototypeImageUrl);
   const html = trackingUrl ? templated + trackingPixelTag(trackingUrl) : templated;
   await transporter.sendMail({
     from: fromName ? `"${fromName}" <${fromAddress}>` : fromAddress,

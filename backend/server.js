@@ -571,7 +571,7 @@ app.post('/api/outreach/send-email', async (req, res) => {
     // Points at the deployed function even for locally-sent emails, since a
     // recipient's mail client can't reach localhost to load the pixel.
     const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospectId}`;
-    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl, prototypeImageUrl: prospect.prototypeImageUrl });
 
     const today = new Date().toISOString().slice(0, 10);
     const followUpDate = new Date();
@@ -919,7 +919,8 @@ const sendApprovedBatch = async () => {
       const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
       const subject = kind === 'initial' ? prospect.draftEmailSubject : kind === 'followup' ? prospect.followUpEmailSubject : prospect.promoEmailSubject;
       const body = kind === 'initial' ? prospect.draftEmailBody : kind === 'followup' ? prospect.followUpEmailBody : prospect.promoEmailBody;
-      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+      const prototypeImageUrl = kind === 'initial' ? prospect.prototypeImageUrl : undefined;
+      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl, prototypeImageUrl });
 
       if (kind === 'initial') {
         const followUpDate = new Date();

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
-  Send, Repeat, Mail, Phone, Compass, Search,
+  Send, Repeat, Mail, Phone, Compass, Search, Image as ImageIcon,
 } from 'lucide-react';
 
 const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/outreach';
@@ -499,6 +499,40 @@ function OutreachAgent() {
       await fetchProspects();
     } catch (e) {
       alert('Could not research this prospect: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Attaches a one-off visual mockup (generated externally, e.g. via an
+  // image-gen tool) showing the idea being pitched — optional, reviewed
+  // alongside the draft before approving/sending, never auto-generated.
+  const handleAttachPrototype = async (p, file) => {
+    if (!file) return;
+    setBusyId(p.id + '-prototype');
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await fetch(`${FUNCTIONS_DIRECT_API}/prospects/${p.id}/prototype-image`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not attach the image: ' + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleRemovePrototype = async (p) => {
+    setBusyId(p.id + '-prototype');
+    try {
+      const res = await fetch(`${FUNCTIONS_DIRECT_API}/prospects/${p.id}/prototype-image`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await fetchProspects();
+    } catch (e) {
+      alert('Could not remove the image: ' + e.message);
     } finally {
       setBusyId(null);
     }
@@ -1139,6 +1173,34 @@ function OutreachAgent() {
                             onChange={e => handleFieldChange(p.id, bodyField, e.target.value)}
                           />
                         </>
+                      )}
+                      {kind === 'initial' && body && (
+                        <div className="bg-gray-900 border border-gray-700 rounded-lg p-2">
+                          <div className="text-xs text-gray-400 mb-1.5">Visual prototype (optional — shown in the email if attached)</div>
+                          {p.prototypeImageUrl ? (
+                            <div className="flex items-start space-x-2">
+                              <img src={p.prototypeImageUrl} alt="Prototype mockup" className="w-32 rounded-lg border border-gray-700" />
+                              <button
+                                onClick={() => handleRemovePrototype(p)}
+                                disabled={busyId === p.id + '-prototype'}
+                                className="text-xs text-gray-400 hover:text-red-400 underline disabled:opacity-50"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <label className={`flex items-center space-x-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all w-fit cursor-pointer ${busyId === p.id + '-prototype' ? 'opacity-50 pointer-events-none' : ''}`}>
+                              {busyId === p.id + '-prototype' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
+                              <span>Attach image</span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={e => handleAttachPrototype(p, e.target.files[0])}
+                              />
+                            </label>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}

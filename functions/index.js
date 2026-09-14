@@ -3,6 +3,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const express = require('express');
 const cors = require('cors');
+const Busboy = require('busboy');
 const { OpenAI } = require('openai');
 
 if (!admin.apps.length) admin.initializeApp();
@@ -244,7 +245,7 @@ app.post('/api/outreach/send-email', async (req, res) => {
     if (!prospect.email) return res.status(400).json({ error: 'Prospect has no email address' });
 
     const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospectId}`;
-    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+    await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl, prototypeImageUrl: prospect.prototypeImageUrl });
 
     const today = new Date().toISOString().slice(0, 10);
     const followUpDate = new Date();
@@ -264,6 +265,88 @@ app.post('/api/outreach/send-email', async (req, res) => {
     res.json({ message: 'Email sent', prospect: updated });
   } catch (error) {
     console.error('send-email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// A visual mockup of the idea being pitched (e.g. a phone mockup of a
+// "[Business] Mind Gym" app screen), generated externally and attached here
+// before the draft is approved/sent — not every prospect gets one, so this
+// is a manual, opt-in step rather than something the AI draft flow triggers.
+//
+// multer's usual req.pipe(busboy) approach doesn't work here: the Functions
+// Framework already drains the request into req.rawBody before Express
+// middleware runs, so by the time multer's busboy tries to read the live
+// stream there's nothing left ("Unexpected end of form"). Feeding req.rawBody
+// into busboy directly sidesteps that.
+const parseSingleFileUpload = (req) => new Promise((resolve, reject) => {
+  const busboy = Busboy({ headers: req.headers, limits: { fileSize: 8 * 1024 * 1024 } });
+  let result = null;
+  busboy.on('file', (fieldname, stream, info) => {
+    const chunks = [];
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => { result = { buffer: Buffer.concat(chunks), mimetype: info.mimeType, originalname: info.filename }; });
+  });
+  busboy.on('finish', () => resolve(result));
+  busboy.on('error', reject);
+  busboy.end(req.rawBody);
+});
+
+app.post('/api/outreach/prospects/:id/prototype-image', async (req, res) => {
+  try {
+    const file = await parseSingleFileUpload(req);
+    if (!file) return res.status(400).json({ error: 'No image file provided' });
+    if (!file.mimetype.startsWith('image/')) return res.status(400).json({ error: 'File must be an image' });
+
+    const prospect = await store.getProspect(req.params.id);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+
+    const ext = (file.originalname.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    const filePath = `prototype-images/${req.params.id}-${Date.now()}.${ext}`;
+    const bucket = admin.storage().bucket('bliss-agents-outreach.firebasestorage.app');
+    const bucketFile = bucket.file(filePath);
+    const token = crypto.randomUUID();
+    await bucketFile.save(file.buffer, {
+      metadata: { contentType: file.mimetype, metadata: { firebaseStorageDownloadTokens: token } },
+    });
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(filePath)}?alt=media&token=${token}`;
+    const updated = await store.updateProspect(req.params.id, { prototypeImageUrl: url });
+    res.json(updated);
+  } catch (error) {
+    console.error('prototype-image upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/outreach/prospects/:id/prototype-image', async (req, res) => {
+  try {
+    const updated = await store.updateProspect(req.params.id, { prototypeImageUrl: admin.firestore.FieldValue.delete() });
+    res.json(updated);
+  } catch (error) {
+    console.error('prototype-image delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Shared, non-prospect-specific email assets (e.g. the signature banner
+// image) — not exposed in the UI, just a way to push a replacement asset
+// without a full redeploy.
+app.post('/api/outreach/assets/:name', async (req, res) => {
+  try {
+    const file = await parseSingleFileUpload(req);
+    if (!file) return res.status(400).json({ error: 'No file provided' });
+    const safeName = req.params.name.replace(/[^a-zA-Z0-9_.-]/g, '');
+    const filePath = `email-assets/${safeName}`;
+    const bucket = admin.storage().bucket('bliss-agents-outreach.firebasestorage.app');
+    const bucketFile = bucket.file(filePath);
+    const token = crypto.randomUUID();
+    await bucketFile.save(file.buffer, {
+      metadata: { contentType: file.mimetype, metadata: { firebaseStorageDownloadTokens: token } },
+    });
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(filePath)}?alt=media&token=${token}`;
+    res.json({ url });
+  } catch (error) {
+    console.error('asset upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -605,7 +688,11 @@ const sendApprovedBatch = async () => {
       const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
       const subject = kind === 'initial' ? prospect.draftEmailSubject : kind === 'followup' ? prospect.followUpEmailSubject : prospect.promoEmailSubject;
       const body = kind === 'initial' ? prospect.draftEmailBody : kind === 'followup' ? prospect.followUpEmailBody : prospect.promoEmailBody;
-      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl });
+      // The prototype image, if attached, only makes sense on the first
+      // email — a follow-up/promo re-sending it would be a repeat, not new
+      // information.
+      const prototypeImageUrl = kind === 'initial' ? prospect.prototypeImageUrl : undefined;
+      await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl, prototypeImageUrl });
 
       if (kind === 'initial') {
         const followUpDate = new Date();
