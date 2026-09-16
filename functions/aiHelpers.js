@@ -420,4 +420,36 @@ const draftPromoEmail = async (openai, { businessName, businessType, contactPers
   return { ...result, body: result.body + emailFooter() };
 };
 
-module.exports = { generateIndustryResearch, suggestGaps, researchProspect, draftMessage, draftEmail, draftFollowUpEmail, draftPromoEmail };
+const imagePromptPrompt = ({ businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research }) => `
+You are helping create a visual mockup prompt for an AI image generator (ChatGPT / DALL-E / Midjourney).
+
+The mockup is a one-off visual of a digital product idea being pitched to a business via cold email — something like a phone screen showing a branded app, or a website hero section — to help them picture what's being suggested. It will be attached to the email as an optional teaser image.
+
+Business: ${businessName} (${businessType})
+Suggested idea / recommended service: ${recommendedService || 'digital product or app'}
+${mindGymAppPotential >= 3 && mindGymAppProduct ? `Custom branded app angle: a version of ${mindGymAppProduct} branded for this business` : ''}
+${research ? `Research notes (use any relevant details for specificity): ${research}` : ''}
+
+Write ONE ready-to-use image generation prompt (2-4 sentences, plain English). The prompt must:
+- Describe a clean, professional phone or device mockup showing a UI screen relevant to this business and idea
+- Name the business in the UI (e.g. "Valeria Wellbeing App" or "${businessName} Mind Gym")
+- Specify a visual style: clean, minimal, warm, modern app UI, soft tones, white or cream background, product photography style
+- NOT describe anything photorealistic with people — just the device/screen mockup itself
+- Be ready to paste directly into ChatGPT or Midjourney with no editing needed
+
+Return ONLY the prompt text, nothing else.
+`;
+
+const generateImagePrompt = async (openai, { businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research }) => {
+  const completion = await withRetry(() => openai.chat.completions.create({
+    model: AI_MODEL,
+    messages: [
+      { role: 'system', content: 'You write concise, ready-to-use image generation prompts. Return only the prompt text.' },
+      { role: 'user', content: imagePromptPrompt({ businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research }) },
+    ],
+    temperature: 0.7,
+  }));
+  return completion.choices[0].message.content.trim();
+};
+
+module.exports = { generateIndustryResearch, suggestGaps, researchProspect, draftMessage, draftEmail, draftFollowUpEmail, draftPromoEmail, generateImagePrompt };

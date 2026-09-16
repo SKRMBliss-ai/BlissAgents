@@ -215,9 +215,64 @@ const googleSearchLink = (businessName, notes) => {
   return `https://www.google.com/search?q=${encodeURIComponent(`${businessName} ${location}`.trim())}`;
 };
 
+// Self-contained: fetches its own prompt on demand so it doesn't pollute the
+// parent component's state. Shown inside the prototype image section of each
+// prospect card — one click, copy, paste into ChatGPT, generate, upload.
+function ImagePromptBox({ prospectId }) {
+  const [prompt, setPrompt] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const generate = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/prospects/${prospectId}/image-prompt`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setPrompt(data.prompt);
+    } catch (e) {
+      alert('Could not generate image prompt: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = () => {
+    navigator.clipboard.writeText(prompt);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <button
+        onClick={generate}
+        disabled={loading}
+        className="flex items-center space-x-1.5 bg-indigo-900/40 hover:bg-indigo-900/60 border border-indigo-700/50 disabled:opacity-50 text-indigo-300 text-xs font-medium py-1.5 px-3 rounded-lg transition-all w-fit"
+      >
+        {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+        <span>{prompt ? 'Regenerate Image Prompt' : 'Get Image Prompt'}</span>
+      </button>
+      {prompt && (
+        <div className="relative bg-gray-800 border border-indigo-800/40 rounded-lg p-2">
+          <p className="text-xs text-indigo-100/90 whitespace-pre-wrap pr-16 leading-relaxed">{prompt}</p>
+          <button
+            onClick={copy}
+            className={`absolute top-2 right-2 text-[10px] font-semibold px-2 py-1 rounded transition-all ${copied ? 'bg-green-700 text-green-100' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}
+          >
+            {copied ? '✓ Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function OutreachAgent() {
   const [prospects, setProspects] = useState([]);
   const [loading, setLoading] = useState(true);
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [expandedId, setExpandedId] = useState(null);
@@ -1175,7 +1230,7 @@ function OutreachAgent() {
                         </>
                       )}
                       {kind === 'initial' && body && (
-                        <div className="bg-gray-900 border border-gray-700 rounded-lg p-2">
+                        <div className="bg-gray-900 border border-gray-700 rounded-lg p-2 space-y-2">
                           <div className="text-xs text-gray-400 mb-1.5">Visual prototype (optional — shown in the email if attached)</div>
                           {p.prototypeImageUrl ? (
                             <div className="flex items-start space-x-2">
@@ -1200,6 +1255,7 @@ function OutreachAgent() {
                               />
                             </label>
                           )}
+                          <ImagePromptBox prospectId={p.id} />
                         </div>
                       )}
                     </div>

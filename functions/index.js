@@ -269,6 +269,27 @@ app.post('/api/outreach/send-email', async (req, res) => {
   }
 });
 
+app.get('/api/outreach/prospects/:id/image-prompt', async (req, res) => {
+  if (!HAS_AI_KEY) return res.status(500).json({ error: 'No AI API key configured (set GEMINI_API_KEY or GROQ_API_KEY secret)' });
+  try {
+    const prospect = await store.getProspect(req.params.id);
+    if (!prospect) return res.status(404).json({ error: 'Prospect not found' });
+    const prompt = await aiHelpers.generateImagePrompt(getOpenAI(), {
+      businessName: prospect.businessName,
+      businessType: prospect.businessType,
+      recommendedService: prospect.recommendedService,
+      mindGymAppProduct: prospect.mindGymAppProduct,
+      mindGymAppPotential: prospect.mindGymAppPotential,
+      research: prospect.research,
+    });
+    res.json({ prompt });
+  } catch (error) {
+    console.error('image-prompt error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 // A visual mockup of the idea being pitched (e.g. a phone mockup of a
 // "[Business] Mind Gym" app screen), generated externally and attached here
 // before the draft is approved/sent — not every prospect gets one, so this
