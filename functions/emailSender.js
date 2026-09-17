@@ -3,7 +3,16 @@ const nodemailer = require('nodemailer');
 // Minimal markdown -> HTML: **bold**, [text](url), and paragraph breaks.
 // Good enough for the simple emails this agent drafts; not a general markdown parser.
 const markdownToHtml = (markdown) => {
-  const escaped = markdown
+  // Brand name auto-link: if AI wrote the name as plain text (not already wrapped
+  // in [text](url)), insert the markdown link format so the name is always clickable.
+  // Lookbehind (?<!\[) prevents double-wrapping if the AI did use [text](url) correctly.
+  const withBrandMarkup = markdown
+    .replace(/(?<!\[)Soulful Intelligence Studio(?!\])/g,
+      '[Soulful Intelligence Studio](https://www.youtube.com/@SoulfulIntelligenceStudio?sub_confirmation=1)')
+    .replace(/(?<!\[)MindGym(?!\])/g,
+      '[MindGym](https://www.skrmblissai.in/mindgym)');
+
+  const escaped = withBrandMarkup
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
@@ -26,6 +35,7 @@ const markdownToHtml = (markdown) => {
 
   return `<div style="font-family: Arial, sans-serif; font-size: 15px; line-height: 1.6; color: #222;">${paragraphs}</div>`;
 };
+
 
 // Matches the branded template used across our other apps (Mind Gym, etc.) —
 // a cream card with a small uppercase header badge and the same rich footer
