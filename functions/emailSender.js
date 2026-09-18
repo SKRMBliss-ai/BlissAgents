@@ -2,7 +2,7 @@ const nodemailer = require('nodemailer');
 
 // Minimal markdown -> HTML: **bold**, [text](url), and paragraph breaks.
 // Good enough for the simple emails this agent drafts; not a general markdown parser.
-const markdownToHtml = (markdown) => {
+const markdownToHtml = (markdown, prototypeImageUrl = null) => {
   if (!markdown) return '';
 
   // Brand name auto-link: if AI wrote the name as plain text (not already wrapped
@@ -26,7 +26,7 @@ const markdownToHtml = (markdown) => {
   const withLinks = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:#c1793a;text-decoration:underline;">$1</a>');
   const withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-  const paragraphs = withBold
+  const blocks = withBold
     .split(/\n\s*\n/)
     .map(block => {
       const lines = block.split('\n').filter(Boolean);
@@ -36,9 +36,24 @@ const markdownToHtml = (markdown) => {
         return `<ul>${items}</ul>`;
       }
       return `<p>${block.replace(/\n/g, '<br>')}</p>`;
-    })
-    .join('\n');
+    });
 
+  if (prototypeImageUrl) {
+    const imgHtml = prototypeImageBlock(prototypeImageUrl);
+    let insertIdx = blocks.length;
+    const signOffIdx = blocks.findIndex(b => /Warm regards|Best regards|Warmly|Shruti &amp; Smriti|Shruti & Smriti/i.test(b));
+    if (signOffIdx > 0) {
+      const prevBlock = blocks[signOffIdx - 1];
+      if (/Would you be open|we'd love to|feel free|let us know|short conversation|brief conversation|\?/i.test(prevBlock)) {
+        insertIdx = signOffIdx - 1;
+      } else {
+        insertIdx = signOffIdx;
+      }
+    }
+    blocks.splice(insertIdx, 0, imgHtml);
+  }
+
+  const paragraphs = blocks.join('\n');
   return `<div style="font-family: Arial, sans-serif; font-size: 15px; line-height: 1.6; color: #222;">${paragraphs}</div>`;
 };
 
@@ -72,9 +87,9 @@ const qrCodesBanner = () => `
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 auto 20px;max-width:520px;">
       <tr>
         <td align="center" width="33%" style="padding:0 6px;vertical-align:top;">
-          <a href="https://www.skrmblissai.in/kidsgym" target="_blank" style="text-decoration:none;">
-            <img src="https://firebasestorage.googleapis.com/v0/b/awakened-path-2026.firebasestorage.app/o/Marketting%2FKidsDiaryCourseQR.png?alt=media" alt="Kids Challenge QR" width="80" height="80" style="display:block;margin:0 auto 8px;border-radius:12px;border:1px solid rgba(193,121,58,0.3);" />
-            <span style="font-size:9px;font-weight:bold;color:#2B2620;text-transform:uppercase;letter-spacing:1px;display:block;">Kids<br/>Challenge</span>
+          <a href="https://www.skrmblissai.in/tiny-kids-transformations" target="_blank" style="text-decoration:none;">
+            <img src="https://firebasestorage.googleapis.com/v0/b/awakened-path-2026.firebasestorage.app/o/Marketting%2FKidsDiaryCourseQR.png?alt=media" alt="Emotion &amp; Feeling Course for Kids QR" width="80" height="80" style="display:block;margin:0 auto 8px;border-radius:12px;border:1px solid rgba(193,121,58,0.3);" />
+            <span style="font-size:9px;font-weight:bold;color:#2B2620;text-transform:uppercase;letter-spacing:1px;display:block;">Emotion &amp; Feeling<br/>Course for Kids</span>
           </a>
         </td>
         <td align="center" width="33%" style="padding:0 6px;vertical-align:top;">
@@ -96,11 +111,11 @@ const qrCodesBanner = () => `
 // Gym" app screen), attached per-prospect from the outreach UI — optional,
 // so most emails render with no gap here at all.
 const prototypeImageBlock = (url) => url ? `
-    <div style="margin:24px 0;text-align:center;">
-      <img src="${url}" alt="A look at what we had in mind" width="496" style="display:block;width:100%;max-width:496px;height:auto;margin:0 auto;border-radius:12px;border:1px solid #e3d2b3;" />
+    <div style="margin:20px 0;text-align:center;">
+      <img src="${url}" alt="A look at what we had in mind" width="340" style="display:block;width:100%;max-width:340px;height:auto;margin:0 auto;border-radius:12px;border:1px solid #e3d2b3;box-shadow:0 4px 16px rgba(0,0,0,0.06);" />
     </div>` : '';
 
-const wrapInBrandedTemplate = (bodyHtml, prototypeImageUrl) => `
+const wrapInBrandedTemplate = (bodyHtml) => `
 <div style="background:#f5ead9;padding:24px 12px;font-family:Georgia,'Times New Roman',serif;">
   <div style="max-width:560px;margin:0 auto;background:#faf1e2;border:1px solid #e3d2b3;border-radius:16px;padding:32px;">
     <div style="text-align:center;margin-bottom:20px;">
@@ -110,7 +125,6 @@ const wrapInBrandedTemplate = (bodyHtml, prototypeImageUrl) => `
       </a>
     </div>
     ${bodyHtml}
-    ${prototypeImageBlock(prototypeImageUrl)}
     <div style="margin-top:28px;padding-top:16px;border-top:1px solid #e3d2b3;text-align:center;">
       ${signatureBanner()}
       ${qrCodesBanner()}
@@ -145,7 +159,7 @@ const sendEmail = async ({ to, subject, body, fromName, trackingUrl, prototypeIm
   await transporter.verify();
 
   const fromAddress = (process.env.EMAIL_USER || '').trim();
-  const templated = wrapInBrandedTemplate(markdownToHtml(body), prototypeImageUrl);
+  const templated = wrapInBrandedTemplate(markdownToHtml(body, prototypeImageUrl));
   const html = trackingUrl ? templated + trackingPixelTag(trackingUrl) : templated;
 
   const mailOptions = {

@@ -72,9 +72,9 @@ const qrCodesBanner = () => `
     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 auto 20px;max-width:520px;">
       <tr>
         <td align="center" width="33%" style="padding:0 6px;vertical-align:top;">
-          <a href="https://www.skrmblissai.in/kidsgym" target="_blank" style="text-decoration:none;">
-            <img src="https://firebasestorage.googleapis.com/v0/b/awakened-path-2026.firebasestorage.app/o/Marketting%2FKidsDiaryCourseQR.png?alt=media" alt="Kids Challenge QR" width="80" height="80" style="display:block;margin:0 auto 8px;border-radius:12px;border:1px solid rgba(193,121,58,0.3);" />
-            <span style="font-size:9px;font-weight:bold;color:#2B2620;text-transform:uppercase;letter-spacing:1px;display:block;">Kids<br/>Challenge</span>
+          <a href="https://www.skrmblissai.in/tiny-kids-transformations" target="_blank" style="text-decoration:none;">
+            <img src="https://firebasestorage.googleapis.com/v0/b/awakened-path-2026.firebasestorage.app/o/Marketting%2FKidsDiaryCourseQR.png?alt=media" alt="Emotion &amp; Feeling Course for Kids QR" width="80" height="80" style="display:block;margin:0 auto 8px;border-radius:12px;border:1px solid rgba(193,121,58,0.3);" />
+            <span style="font-size:9px;font-weight:bold;color:#2B2620;text-transform:uppercase;letter-spacing:1px;display:block;">Emotion &amp; Feeling<br/>Course for Kids</span>
           </a>
         </td>
         <td align="center" width="33%" style="padding:0 6px;vertical-align:top;">
