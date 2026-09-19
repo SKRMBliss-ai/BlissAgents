@@ -281,6 +281,7 @@ app.get('/api/outreach/prospects/:id/image-prompt', async (req, res) => {
       mindGymAppProduct: prospect.mindGymAppProduct,
       mindGymAppPotential: prospect.mindGymAppPotential,
       research: prospect.research,
+      notes: prospect.notes,
     });
     res.json({ prompt });
   } catch (error) {

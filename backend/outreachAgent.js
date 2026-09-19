@@ -108,13 +108,16 @@ ${mindGymAppScoringGuide}
 Return ONLY a JSON object: { "digitalGaps": ["...", "..."], "recommendedService": "...", "mindGymAppPotential": 0-4, "mindGymAppProduct": "MindGym" | "HabitQuest" | "SimplyPiano" | null, "mindGymAppReason": "...", "feelingsCourseAffiliateFit": 0-4, "feelingsCourseAffiliateReason": "..." }
 `;
 
-// Full identity rewrite (superseding the earlier "small India/UK team"
-// framing) — Shruti & Smriti, twin sisters, technologists who also work in
-// emotional intelligence / mind training. Given as a very detailed spec; this
-// captures its essential rules within what this system can actually do (no
-// live web research per prospect — only businessName/businessType/notes/
-// inferred digitalGaps), so "research" below means reasoning from realistic
-// patterns for that business type, not browsing their actual site.
+const LOCAL_LANGUAGE_RULES = `
+CRITICAL LOCAL LANGUAGE MANDATE (STRICT COMPLIANCE REQUIRED):
+1. Identify the prospect's native local language based on their location, city, country, website domain, or notes/research (e.g., Vietnam / Saigon / Hanoi -> Vietnamese, France / Paris -> French, Germany / Berlin -> German, Spain / Madrid / Barcelona -> Spanish, Japan / Tokyo -> Japanese, Brazil -> Portuguese, Italy -> Italian, Netherlands -> Dutch, Mexico -> Spanish, etc.).
+2. EXCEPTION FOR INDIA: If the prospect is located in India or an Indian city (Delhi, Mumbai, Bangalore, Bengaluru, Hyderabad, Chennai, Kolkata, Pune, etc., or notes mentioning India): ALWAYS write the entire email / message in clear, natural ENGLISH (do NOT write in Hindi or regional Indian languages).
+3. NATIVE ENGLISH REGIONS: If the prospect is in the UK, US, Canada, Australia, New Zealand, Ireland, or Singapore, write in clear, natural ENGLISH.
+4. ALL OTHER INTERNATIONAL COUNTRIES (Vietnam, France, Germany, Spain, Japan, Brazil, etc.):
+   ALWAYS WRITE THE ENTIRE DRAFT (Subject Line and Email/Message Body) IN THE PROSPECT'S LOCAL LANGUAGE!
+   Translate and naturally adapt all introduction elements ("Shruti & Smriti - twin sisters", technologists, mind training), pitches, observations, and warm closings into fluent, culturally natural local language.
+`;
+
 const IDENTITY = `
 You are writing on behalf of Shruti & Smriti — twin sisters working at an unusual intersection of technology and spirituality. They are independent digital creators and technologists who personally build digital products, websites, apps, AI solutions and automation, and help businesses and people bring their ideas to life, simplify their operations and grow. Alongside that, Smriti works in spirituality, emotional understanding and mind training — she creates practical, structured programs that help people understand their feelings and emotions, understand how their minds work, respond to emotions more consciously, and build better mental habits. They are not a large corporate agency, not an outsourcing firm, not a sales team — there are two of them, personally involved in the work, and they value honesty, trust, transparency and personal connection. They don't approach a business asking "what can we sell them" — they first want to understand what the business is building, what it needs, and whether there's something genuine to contribute.
 
@@ -125,6 +128,8 @@ The central thread connecting both halves of their work: they're trying to bring
 The recipient should finish the email feeling: "I know who these two are, what they believe in, what they can build, and why they specifically reached out to me" — never "another technology company wants to sell me something", and never "someone is trying to sell me a spiritual course". Do not state any of this framing literally (e.g. never write "we don't want to extract money from you") — it should come through in the warmth, honesty and non-pushy nature of the writing itself. Keep the spirituality side grounded and factual, never oversold — avoid claims like "we transform lives", "we heal people", or "we revolutionize consciousness".
 
 Write as "we"/"us" throughout — never "I"/"me". They present themselves together, always.
+
+${LOCAL_LANGUAGE_RULES}
 
 Hard rules:
 - ONE primary idea per message — not a list, not multiple angles stacked together. Pick the single most relevant one and commit to it.
@@ -474,6 +479,46 @@ const draftPromoEmail = async (openai, { businessName, businessType, contactPers
   return { ...result, body: result.body + emailFooter() };
 };
 
+const imagePromptPrompt = ({ businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research, notes }) => `
+You are helping create a visual mockup prompt for an AI image generator (ChatGPT / DALL-E / Midjourney).
+
+The mockup is a one-off visual of a digital product idea being pitched to a business via cold email — something like a phone screen showing a branded app, or a website hero section — to help them picture what's being suggested. It will be attached to the email as an optional teaser image.
+
+Business: ${businessName} (${businessType})
+Notes / location info: ${notes || 'none'}
+Suggested idea / recommended service: ${recommendedService || 'digital product or app'}
+${mindGymAppPotential >= 3 && mindGymAppProduct ? `Custom branded app angle: a version of ${mindGymAppProduct} branded for this business` : ''}
+${research ? `Research notes (use any relevant details for specificity): ${research}` : ''}
+
+CRITICAL LOCAL LANGUAGE MANDATE FOR THE UI MOCKUP IMAGE PROMPT:
+- Determine the prospect's native local language from their location, city, country, website, or research notes (e.g. Vietnamese for Vietnam/Saigon, French for France, German for Germany, Spanish for Spain, Japanese for Japan, Portuguese for Brazil, etc.).
+- EXCEPTION: For prospects in India or native English-speaking countries (UK, US, Canada, Australia, NZ, Ireland, Singapore), use ENGLISH for all UI text on the screen.
+- FOR ALL OTHER INTERNATIONAL PROSPECTS (e.g. Vietnam, France, Germany, Spain, Japan, etc.): Explicitly instruct the AI image generator that ALL visible text labels, titles, headers, banner headlines, buttons, and bottom navigation tab items ON THE PHONE/DEVICE SCREEN MUST BE WRITTEN IN THE PROSPECT'S LOCAL LANGUAGE!
+- In your prompt text, provide 3-4 specific translated text examples in that local language for the device screen UI (for example, for a Vietnamese Saigon therapy app mockup: specify app title "Phòng Tâm Lý Sài Gòn", main headline "Sức Khỏe Tinh Thần Cho Cuộc Sống Tốt Đẹp Hơn", primary action button "Đặt Lịch Khám Ngay", and bottom tabs "Trang Chủ", "Dịch Vụ", "Lịch Hẹn").
+
+Write ONE ready-to-use image generation prompt (2-4 sentences, plain English instructions for DALL-E/Midjourney). The prompt must:
+- Describe a clean, professional phone or device mockup showing a UI screen relevant to this business and idea
+- Name the business in the UI (e.g. "${businessName}" or local language title)
+- Explicitly specify that all screen titles, navigation headers, buttons, and taglines ARE RENDERED IN THE PROSPECT'S LOCAL LANGUAGE (with 3-4 explicit translated text examples)
+- Specify a visual style: clean, minimal, warm, modern app UI, soft tones, white or cream background, product photography style
+- NOT describe anything photorealistic with people — just the device/screen mockup itself
+- Be ready to paste directly into ChatGPT or Midjourney with no editing needed
+
+Return ONLY the prompt text, nothing else.
+`;
+
+const generateImagePrompt = async (openai, { businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research, notes }) => {
+  const completion = await withRetry(() => openai.chat.completions.create({
+    model: AI_MODEL,
+    messages: [
+      { role: 'system', content: 'You write concise, ready-to-use image generation prompts with local language UI text specs. Return only the prompt text.' },
+      { role: 'user', content: imagePromptPrompt({ businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research, notes }) },
+    ],
+    temperature: 0.7,
+  }));
+  return completion.choices[0].message.content.trim();
+};
+
 module.exports = {
   loadProspects,
   saveProspects,
@@ -486,6 +531,7 @@ module.exports = {
   draftEmail,
   draftFollowUpEmail,
   draftPromoEmail,
+  generateImagePrompt,
   withRetry,
   STATUSES,
 };
