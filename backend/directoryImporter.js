@@ -59,4 +59,59 @@ const importTherapyInLondon = async ({ existingProspects, excludedIdentifiers, c
   return found;
 };
 
-module.exports = { importTherapyInLondon };
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const COUNSELLING_DIR_JSON = path.join(__dirname, 'data', 'counselling_directory_contacts.json');
+
+const importCounsellingDirectory = async ({ existingProspects, excludedIdentifiers, count = 20, cities }) => {
+  let contacts = [];
+  
+  // Run python scraper if needed or read existing data
+  if (!fs.existsSync(COUNSELLING_DIR_JSON)) {
+    try {
+      console.log('[directoryImporter] Running python counsellingDirectoryScraper.py...');
+      execSync('python counsellingDirectoryScraper.py', { cwd: __dirname, stdio: 'inherit' });
+    } catch (e) {
+      console.error('[directoryImporter] Error running python scraper:', e.message);
+    }
+  }
+
+  if (fs.existsSync(COUNSELLING_DIR_JSON)) {
+    try {
+      contacts = JSON.parse(fs.readFileSync(COUNSELLING_DIR_JSON, 'utf8'));
+    } catch (e) {
+      console.error('[directoryImporter] Failed to parse contacts json:', e.message);
+    }
+  }
+
+  const existingUrls = new Set(existingProspects.map(p => p.sourceUrl).filter(Boolean));
+  const excluded = excludedIdentifiers || new Set();
+
+  const found = contacts.filter(c => !existingUrls.has(c.sourceUrl) && !excluded.has(c.sourceUrl)).slice(0, count);
+
+  return found.map(c => ({
+    id: Date.now().toString() + Math.random().toString().slice(2, 6),
+    digitalGaps: [],
+    recommendedService: '',
+    draftMessage: '',
+    status: 'New',
+    createdAt: new Date().toISOString(),
+    lastContactDate: null,
+    followUpDate: null,
+    businessName: c.businessName,
+    businessType: c.businessType || 'Counsellor / Psychotherapist',
+    website: c.website || '',
+    instagram: '',
+    contactPerson: c.contactPerson || c.businessName,
+    email: c.email || '',
+    whatsapp: c.whatsapp || c.phone || '',
+    notes: c.notes || `Sourced from counselling-directory.org.uk profile (${c.location || ''})`,
+    sourceUrl: c.sourceUrl,
+    needsManualContact: !c.email && !c.whatsapp
+  }));
+};
+
+module.exports = { importTherapyInLondon, importCounsellingDirectory };
+
