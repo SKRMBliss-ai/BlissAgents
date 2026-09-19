@@ -615,6 +615,23 @@ app.post('/api/outreach/import-therapy-directory', async (req, res) => {
   }
 });
 
+app.post('/api/outreach/import-counselling-directory', async (req, res) => {
+  try {
+    const { count } = req.body || {};
+    const existingProspects = await store.loadProspects();
+    const excludedIdentifiers = await store.loadExcludedIdentifiers();
+    const found = await directoryImporter.importCounsellingDirectory({ existingProspects, excludedIdentifiers, count: count || 30 });
+    if (found.length > 0) {
+      await store.bulkAddProspects(found);
+    }
+    res.json({ imported: found.length, found });
+  } catch (error) {
+    console.error('import-counselling-directory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.get('/api/outreach/freelancer-types', (req, res) => {
   res.json({ types: freelancerFinder.FREELANCER_TYPES });
 });

@@ -4,6 +4,7 @@ import {
   Users, Plus, Sparkles, MessageSquare, Trash2, X,
   AlertCircle, CheckCircle2, Star, ChevronDown, ChevronUp, Loader2,
   Send, Repeat, Mail, Phone, Compass, Search, Image as ImageIcon,
+  Clock, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 
 const API = import.meta.env.PROD ? '/api/outreach' : 'http://localhost:3001/api/outreach';
@@ -302,6 +303,16 @@ function OutreachAgent() {
   const [directoryError, setDirectoryError] = useState('');
   const [directoryResultCount, setDirectoryResultCount] = useState(null);
 
+  const [importingCounsellingDir, setImportingCounsellingDir] = useState(false);
+  const [counsellingDirError, setCounsellingDirError] = useState('');
+  const [counsellingDirResultCount, setCounsellingDirResultCount] = useState(null);
+
+  // Layout View Tabs & Pagination State
+  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'priority' | 'pending' | 'contacted'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
     setProspects(await res.json());
@@ -367,6 +378,27 @@ function OutreachAgent() {
       setDirectoryError(e.message);
     } finally {
       setImportingDirectory(false);
+    }
+  };
+
+  const handleImportCounsellingDirectory = async () => {
+    setImportingCounsellingDir(true);
+    setCounsellingDirError('');
+    setCounsellingDirResultCount(null);
+    try {
+      const res = await fetch(`${API}/import-counselling-directory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 30 }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setCounsellingDirResultCount(data.imported);
+      await fetchProspects();
+    } catch (e) {
+      setCounsellingDirError(e.message);
+    } finally {
+      setImportingCounsellingDir(false);
     }
   };
 
@@ -794,6 +826,69 @@ function OutreachAgent() {
       });
   }, [prospects, categoryFilter, emailOnlyFilter, nonIndianFilter, ukOnlyFilter, priorityOnlyFilter]);
 
+  const tabCounts = useMemo(() => {
+    let priority = 0;
+    let pending = 0;
+    let contacted = 0;
+
+    approvalQueue.forEach(({ p, kind }) => {
+      const pInfo = priorityInfo(p);
+      if (pInfo && pInfo.label !== null) priority++;
+      const stage = computeSendStage(p, kind);
+      if (stage === 'Needs Review' || stage === 'Follow-up Ready' || stage === 'Promo Ready' || stage === 'In Queue') pending++;
+      if (contactedVia(p) !== null || (p.status && p.status !== 'New')) contacted++;
+    });
+
+    return {
+      all: approvalQueue.length,
+      priority,
+      pending,
+      contacted,
+    };
+  }, [approvalQueue]);
+
+  const filteredApprovalQueue = useMemo(() => {
+    let list = approvalQueue;
+
+    if (activeTab === 'priority') {
+      list = list.filter(({ p }) => priorityInfo(p).label !== null);
+    } else if (activeTab === 'pending') {
+      list = list.filter(({ p, kind }) => {
+        const stage = computeSendStage(p, kind);
+        return stage === 'Needs Review' || stage === 'Follow-up Ready' || stage === 'Promo Ready' || stage === 'In Queue';
+      });
+    } else if (activeTab === 'contacted') {
+      list = list.filter(({ p }) => contactedVia(p) !== null || (p.status && p.status !== 'New'));
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter(({ p }) =>
+        (p.businessName || '').toLowerCase().includes(q) ||
+        (p.email || '').toLowerCase().includes(q) ||
+        (p.whatsapp || '').toLowerCase().includes(q) ||
+        (p.contactPerson || '').toLowerCase().includes(q) ||
+        (p.businessType || '').toLowerCase().includes(q) ||
+        (p.notes || '').toLowerCase().includes(q)
+      );
+    }
+
+    return list;
+  }, [approvalQueue, activeTab, searchQuery]);
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(filteredApprovalQueue.length / pageSize)), [filteredApprovalQueue.length, pageSize]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
+
+  const paginatedQueue = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredApprovalQueue.slice(start, start + pageSize);
+  }, [filteredApprovalQueue, currentPage, pageSize]);
+
   const handleRedraftPending = async () => {
     if (!confirm(`Regenerate all ${approvalQueue.filter(({ kind }) => kind === 'initial').length} pending first-touch drafts with the latest template? Any manual edits to unapproved drafts will be overwritten. This can take a couple of minutes and may hit AI rate limits — any prospect that fails just keeps its current draft, and you can run this again to retry those.`)) return;
     setRedrafting(true);
@@ -941,30 +1036,91 @@ function OutreachAgent() {
         </div>
       )}
 
-      {/* Approval Queue — the review step: has a draft, needs a human look before it can send */}
-      <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <h2 className="text-lg font-semibold text-white">Prospect Queue ({approvalQueue.length}{(categoryFilter !== 'all' || emailOnlyFilter || nonIndianFilter || ukOnlyFilter || priorityOnlyFilter) ? ` of ${prospects.length}` : ''})</h2>
-          <p className="text-xs text-gray-500">Every prospect, one row each, sorted by what needs attention first. Fill in email/phone if missing, then approve — the hourly sender picks up approved ones automatically, paced through the day.</p>
-          <button
-            onClick={handleRedraftPending}
-            disabled={redrafting}
-            title="Regenerates every un-approved, un-sent draft using the current template — use this after a copy/persona change"
-            className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all"
-          >
-            {redrafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Repeat className="w-3.5 h-3.5" />}
-            <span>Refresh Pending Drafts</span>
-          </button>
-          <button
-            onClick={handleDraftMissingPromos}
-            disabled={draftingPromos}
-            title="Drafts the courses/apps promo email for every already-emailed prospect who doesn't have one yet"
-            className="flex items-center space-x-2 bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/50 disabled:opacity-50 text-purple-300 text-xs font-medium py-1.5 px-3 rounded-lg transition-all"
-          >
-            {draftingPromos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-            <span>Draft Missing Promos</span>
-          </button>
+      {/* Approval Queue — tabbed, searchable, paginated prospect queue */}
+      <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-5">
+        {/* Tab Header & Action Buttons */}
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-700/80 pb-4 gap-3">
+          <div className="flex items-center space-x-2 overflow-x-auto py-1">
+            <button
+              onClick={() => { setActiveTab('all'); setCurrentPage(1); }}
+              className={`flex items-center space-x-2 text-xs font-semibold px-4 py-2.5 rounded-xl border transition-all ${
+                activeTab === 'all'
+                  ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-900/30'
+                  : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              <span>All Prospects</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'all' ? 'bg-emerald-700 text-emerald-100' : 'bg-gray-800 text-gray-400'}`}>
+                {tabCounts.all}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('priority'); setCurrentPage(1); }}
+              className={`flex items-center space-x-2 text-xs font-semibold px-4 py-2.5 rounded-xl border transition-all ${
+                activeTab === 'priority'
+                  ? 'bg-amber-600 border-amber-500 text-white shadow-lg shadow-amber-900/30'
+                  : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              <span>🔥 Priority Action</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'priority' ? 'bg-amber-700 text-amber-100' : 'bg-gray-800 text-gray-400'}`}>
+                {tabCounts.priority}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('pending'); setCurrentPage(1); }}
+              className={`flex items-center space-x-2 text-xs font-semibold px-4 py-2.5 rounded-xl border transition-all ${
+                activeTab === 'pending'
+                  ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-900/30'
+                  : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              <span>⏳ Needs Review</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'pending' ? 'bg-purple-700 text-purple-100' : 'bg-gray-800 text-gray-400'}`}>
+                {tabCounts.pending}
+              </span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('contacted'); setCurrentPage(1); }}
+              className={`flex items-center space-x-2 text-xs font-semibold px-4 py-2.5 rounded-xl border transition-all ${
+                activeTab === 'contacted'
+                  ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/30'
+                  : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              <span>✅ Contacted</span>
+              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'contacted' ? 'bg-blue-700 text-blue-100' : 'bg-gray-800 text-gray-400'}`}>
+                {tabCounts.contacted}
+              </span>
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handleRedraftPending}
+              disabled={redrafting}
+              title="Regenerates every un-approved, un-sent draft using the current template"
+              className="flex items-center space-x-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs font-medium py-2 px-3 rounded-lg transition-all"
+            >
+              {redrafting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Repeat className="w-3.5 h-3.5" />}
+              <span>Refresh Drafts</span>
+            </button>
+            <button
+              onClick={handleDraftMissingPromos}
+              disabled={draftingPromos}
+              title="Drafts the courses/apps promo email for every already-emailed prospect"
+              className="flex items-center space-x-1.5 bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/50 disabled:opacity-50 text-purple-300 text-xs font-medium py-2 px-3 rounded-lg transition-all"
+            >
+              {draftingPromos ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              <span>Draft Promos</span>
+            </button>
+          </div>
         </div>
+
+        {/* Status messages for bulk operations */}
         {redraftResult && (
           <p className={`text-xs ${redraftResult.updated < redraftResult.attempted ? 'text-orange-400' : 'text-green-400'}`}>
             Updated {redraftResult.updated} of {redraftResult.attempted} drafts.
@@ -977,39 +1133,108 @@ function OutreachAgent() {
             {promoDraftResult.updated < promoDraftResult.attempted && ' The rest hit an AI rate limit — click again to retry them.'}
           </p>
         )}
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="text-xs bg-gray-900 border border-gray-700 text-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-600"
-          >
-            <option value="all">All categories</option>
-            {Object.entries(OUTREACH_CATEGORIES).sort((a, b) => a[1].rank - b[1].rank).map(([key, cat]) => (
-              <option key={key} value={key}>{cat.label}</option>
-            ))}
-          </select>
-          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-            <input type="checkbox" checked={emailOnlyFilter} onChange={(e) => setEmailOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
-            Has Email
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-            <input type="checkbox" checked={nonIndianFilter} onChange={(e) => setNonIndianFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
-            Non-Indian
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-            <input type="checkbox" checked={ukOnlyFilter} onChange={(e) => setUkOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
-            UK Only
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-            <input type="checkbox" checked={priorityOnlyFilter} onChange={(e) => setPriorityOnlyFilter(e.target.checked)} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
-            Priority Only
-          </label>
+
+        {/* Search & Filter Controls Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-900/50 p-3 rounded-xl border border-gray-700/70">
+          <div className="relative flex-1 min-w-[240px]">
+            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Search by name, email, phone, city, notes..."
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-9 pr-8 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => { setSearchQuery(''); setCurrentPage(1); }}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={categoryFilter}
+              onChange={(e) => { setCategoryFilter(e.target.value); setCurrentPage(1); }}
+              className="text-xs bg-gray-900 border border-gray-700 text-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+            >
+              <option value="all">All categories</option>
+              {Object.entries(OUTREACH_CATEGORIES).sort((a, b) => a[1].rank - b[1].rank).map(([key, cat]) => (
+                <option key={key} value={key}>{cat.label}</option>
+              ))}
+            </select>
+
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" checked={emailOnlyFilter} onChange={(e) => { setEmailOnlyFilter(e.target.checked); setCurrentPage(1); }} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+              Has Email
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" checked={nonIndianFilter} onChange={(e) => { setNonIndianFilter(e.target.checked); setCurrentPage(1); }} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+              Non-Indian
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" checked={ukOnlyFilter} onChange={(e) => { setUkOnlyFilter(e.target.checked); setCurrentPage(1); }} className="rounded border-gray-700 bg-gray-900 text-emerald-600 focus:ring-emerald-600" />
+              UK Only
+            </label>
+
+            <div className="flex items-center space-x-1.5 border-l border-gray-700 pl-3">
+              <span className="text-xs text-gray-400">Rows:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+                className="text-xs bg-gray-900 border border-gray-700 text-gray-200 rounded-lg px-2 py-1.5 focus:outline-none"
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
         </div>
-        {approvalQueue.length === 0 ? (
-          <p className="text-sm text-gray-500">Nothing waiting for review right now.</p>
+
+        {/* Pagination Info Header */}
+        <div className="flex items-center justify-between text-xs text-gray-400 px-1 pt-1">
+          <div>
+            Showing {filteredApprovalQueue.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}–
+            {Math.min(currentPage * pageSize, filteredApprovalQueue.length)} of {filteredApprovalQueue.length} items
+            {filteredApprovalQueue.length !== approvalQueue.length && ` (filtered from ${approvalQueue.length})`}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1.5 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-700 text-gray-300 disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="font-medium text-white px-2">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-1.5 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-700 text-gray-300 disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Prospect List */}
+        {filteredApprovalQueue.length === 0 ? (
+          <div className="py-8 text-center text-sm text-gray-500 bg-gray-900/30 rounded-xl border border-gray-800">
+            No prospects match the selected tab, search query, or filters.
+          </div>
         ) : (
           <div className="space-y-2">
-            {approvalQueue.map(({ p, kind }) => {
+            {paginatedQueue.map(({ p, kind }) => {
               const isOpen = expandedQueueIds.has(p.id + kind);
               const subjectField = kind === 'initial' ? 'draftEmailSubject' : kind === 'followup' ? 'followUpEmailSubject' : 'promoEmailSubject';
               const bodyField = kind === 'initial' ? 'draftEmailBody' : kind === 'followup' ? 'followUpEmailBody' : 'promoEmailBody';
@@ -1021,7 +1246,7 @@ function OutreachAgent() {
               const stage = computeSendStage(p, kind);
               const priorityLabel = priorityInfo(p).label;
               return (
-                <div key={p.id + kind} className="bg-gray-900/60 border border-gray-700 rounded-xl p-2">
+                <div key={p.id + kind} className="bg-gray-900/60 border border-gray-700 rounded-xl p-2.5 transition-all hover:border-gray-600">
                   <div className="flex flex-col sm:flex-row sm:items-center gap-1.5">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {priorityLabel && (
@@ -1265,6 +1490,33 @@ function OutreachAgent() {
             })}
           </div>
         )}
+
+        {/* Pagination Controls Footer */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-gray-700/80 pt-4 text-xs text-gray-400">
+            <div>
+              Showing page {currentPage} of {totalPages} ({filteredApprovalQueue.length} items)
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-700 text-gray-300 disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Previous</span>
+              </button>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-900 hover:bg-gray-700 text-gray-300 disabled:opacity-30 disabled:pointer-events-none"
+              >
+                <span>Next</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Prospect Discovery — collapsed by default; runs automatically every day
@@ -1437,6 +1689,33 @@ function OutreachAgent() {
           )}
         </div>
       )}
+
+      {/* Directory Import — counselling-directory.org.uk */}
+      <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">
+        <div className="flex items-center space-x-2">
+          <Compass className="w-5 h-5 text-teal-400" />
+          <h2 className="text-lg font-semibold text-white">Import UK Counsellors — counselling-directory.org.uk</h2>
+        </div>
+        <p className="text-xs text-gray-500">
+          Pulls verified UK counsellors & therapists with direct phone numbers (+44...) across major UK cities. Automatically formatted and added to your outreach queue.
+        </p>
+        <button
+          onClick={handleImportCounsellingDirectory}
+          disabled={importingCounsellingDir}
+          className="flex items-center space-x-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-semibold py-2.5 px-5 rounded-lg transition-all"
+        >
+          {importingCounsellingDir ? <Loader2 className="w-4 h-4 animate-spin" /> : <Compass className="w-4 h-4" />}
+          <span>Import UK Counsellors Now</span>
+        </button>
+        {counsellingDirError && (
+          <div className="text-sm text-red-400 bg-red-900/20 border border-red-800/50 rounded-lg p-3">{counsellingDirError}</div>
+        )}
+        {counsellingDirResultCount !== null && !counsellingDirError && (
+          <div className="text-sm text-teal-400 bg-teal-900/20 border border-teal-800/50 rounded-lg p-3">
+            Imported {counsellingDirResultCount} UK counsellor prospect{counsellingDirResultCount === 1 ? '' : 's'}.
+          </div>
+        )}
+      </div>
 
       {/* Directory Import — therapyin.london */}
       <div className="bg-gray-800 rounded-2xl p-6 shadow-xl border border-gray-700 space-y-4">

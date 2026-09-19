@@ -823,6 +823,23 @@ app.post('/api/outreach/import-therapy-directory', async (req, res) => {
   }
 });
 
+app.post('/api/outreach/import-counselling-directory', async (req, res) => {
+  try {
+    const { count } = req.body || {};
+    const existingProspects = outreachAgent.loadProspects();
+    const excludedIdentifiers = outreachAgent.loadExcludedIdentifiers();
+    const found = await directoryImporter.importCounsellingDirectory({ existingProspects, excludedIdentifiers, count: count || 30 });
+    if (found.length > 0) {
+      outreachAgent.saveProspects([...found, ...existingProspects]);
+    }
+    res.json({ imported: found.length, found });
+  } catch (error) {
+    console.error('import-counselling-directory error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.post('/api/outreach/find-freelancers', async (req, res) => {
   if (!process.env.BLISS_AGENT_CUSTOM_SEARCH_ENG || !process.env.GOOGLE_CUSTOM_SEARCH_CX) {
     return res.status(500).json({ error: 'BLISS_AGENT_CUSTOM_SEARCH_ENG / GOOGLE_CUSTOM_SEARCH_CX is not set in backend/.env' });
