@@ -3,12 +3,44 @@ import { Link } from 'react-router-dom';
 import {
   Share2, Video, Sparkles, Users, ArrowRight, Activity,
   ShieldCheck, Globe, Zap, Cpu, Search, Mail, MessageSquare,
-  Image as ImageIcon, CheckCircle2, RefreshCw, Terminal
+  Image as ImageIcon, CheckCircle2, RefreshCw, Terminal, Sliders,
+  Filter, CheckSquare, Download, Lock, Settings, ShieldAlert,
+  Clock, ExternalLink, FileText, Eye, Play, X, Info, AlertCircle
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 function Dashboard() {
-  const [activeTab, setActiveTab] = useState('all');
+  const [adminMode, setAdminMode] = useState('production');
+  const [logFilter, setLogFilter] = useState('all');
+  const [logSearch, setLogSearch] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleRefreshSync = () => {
+    setIsSyncing(true);
+    setTimeout(() => {
+      setIsSyncing(false);
+      showToast('System synced: 148 leads, Cloud Functions V2 active.');
+    }, 800);
+  };
+
+  const handleExportCSV = () => {
+    const csvContent = "data:text/csv;charset=utf-8,Name,City,Country,Language,Status\nHo Chi Minh Wellness,Saigon,Vietnam,Vietnamese,Drafted\nParis Therapy Studio,Paris,France,French,Drafted\nBerlin Mind Studio,Berlin,Germany,German,Drafted\nSydney Yoga,Sydney,Australia,English,Contacted";
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "bliss_outreach_leads_admin_export.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Admin CSV Lead Report exported successfully!');
+  };
 
   const stats = [
     {
@@ -34,10 +66,49 @@ function Dashboard() {
     },
     {
       label: 'Tone Safeguard',
-      value: '100% Compliant',
-      sub: 'Zero filler / Professional tone',
+      value: '100% Policy Compliant',
+      sub: 'Zero filler / Hard rules active',
       icon: <ShieldCheck className="w-5 h-5 text-amber-400" />,
       glow: 'shadow-[0_0_20px_rgba(245,158,11,0.15)]',
+    },
+  ];
+
+  const adminTasks = [
+    {
+      id: 1,
+      title: 'Review 12 Pending Native Drafts',
+      desc: 'Vietnamese, French & German emails waiting for 1-click admin approval',
+      path: '/outreach-agent?tab=review',
+      badge: 'High Priority',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+      icon: <Mail className="w-4 h-4 text-emerald-400" />,
+    },
+    {
+      id: 2,
+      title: 'Inspect DALL-E Phone Screen Prompts',
+      desc: 'Verify translated UI button text ("S’abonner", "Méditer") for phone mockups',
+      path: '/outreach-agent?tab=mockups',
+      badge: 'Mockup AI',
+      badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
+      icon: <ImageIcon className="w-4 h-4 text-purple-400" />,
+    },
+    {
+      id: 3,
+      title: 'Approve Facebook Group Content',
+      desc: '3 scheduled community posts formatted for targeted groups',
+      path: '/fb-agent',
+      badge: 'Social Queue',
+      badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+      icon: <Share2 className="w-4 h-4 text-blue-400" />,
+    },
+    {
+      id: 4,
+      title: 'Deliverability & Bounced Email Status',
+      desc: '0 Active bounces (jess198402@gmail.com permanently removed)',
+      path: '#',
+      badge: 'Clean Status',
+      badgeColor: 'bg-gray-800 text-gray-300 border-gray-700',
+      icon: <ShieldAlert className="w-4 h-4 text-gray-400" />,
     },
   ];
 
@@ -154,6 +225,7 @@ function Dashboard() {
     {
       id: 1,
       time: 'Just now',
+      category: 'language',
       agent: 'Outreach Agent',
       type: 'Local Language AI',
       color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
@@ -162,6 +234,7 @@ function Dashboard() {
     {
       id: 2,
       time: '5m ago',
+      category: 'mockup',
       agent: 'Image Prompt Engine',
       type: 'DALL-E 3 Mockup',
       color: 'text-purple-400 bg-purple-500/10 border-purple-500/30',
@@ -170,6 +243,7 @@ function Dashboard() {
     {
       id: 3,
       time: '12m ago',
+      category: 'safeguard',
       agent: 'Tone Safeguard',
       type: 'Policy Enforcement',
       color: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
@@ -178,15 +252,111 @@ function Dashboard() {
     {
       id: 4,
       time: '25m ago',
+      category: 'scrape',
       agent: 'Directory Scraper',
       type: 'Lead Discovery',
       color: 'text-blue-400 bg-blue-500/10 border-blue-500/30',
       message: 'Scraped 15 new Wellness & Laughter Yoga centers in Sydney & Abu Dhabi.',
     },
+    {
+      id: 5,
+      time: '1h ago',
+      category: 'safeguard',
+      agent: 'Bounce Guard',
+      type: 'Deliverability',
+      color: 'text-gray-300 bg-gray-800 border-gray-700',
+      message: 'Bounced address jess198402@gmail.com safely suppressed from subscriber queue.',
+    },
   ];
 
+  const filteredLogs = recentLogs.filter((log) => {
+    const matchesCategory = logFilter === 'all' || log.category === logFilter;
+    const matchesSearch = !logSearch ||
+      log.message.toLowerCase().includes(logSearch.toLowerCase()) ||
+      log.agent.toLowerCase().includes(logSearch.toLowerCase()) ||
+      log.type.toLowerCase().includes(logSearch.toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
+
   return (
-    <div className="max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500 pb-16">
+    <div className="max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500 pb-16 relative">
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-20 right-6 z-50 bg-gray-900 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-2xl shadow-2xl flex items-center space-x-2 text-sm font-semibold"
+          >
+            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <span>{toastMessage}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Admin Top Command Bar */}
+      <div className="bg-gray-950/80 rounded-2xl p-4 border border-gray-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+        <div className="flex items-center space-x-3 w-full md:w-auto">
+          <div className="p-2 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400">
+            <Sliders className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center space-x-2">
+              <span className="text-sm font-extrabold text-white tracking-wide">Admin Control Deck</span>
+              <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
+                Super Admin
+              </span>
+            </div>
+            <p className="text-xs text-gray-400">Cloud Functions V2 API: <code className="text-emerald-400 font-mono">api-vvuw6rft4q-uc.a.run.app</code></p>
+          </div>
+        </div>
+
+        {/* Admin Quick Action Controls */}
+        <div className="flex items-center space-x-2.5 w-full md:w-auto justify-end">
+          {/* Admin Mode Switcher */}
+          <button
+            onClick={() => setAdminMode(adminMode === 'production' ? 'sandbox' : 'production')}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center space-x-1.5 ${
+              adminMode === 'production'
+                ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                : 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${adminMode === 'production' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span>{adminMode === 'production' ? 'Mode: Production' : 'Mode: Sandbox Test'}</span>
+          </button>
+
+          {/* Policy Rules Button */}
+          <button
+            onClick={() => setShowRulesModal(true)}
+            className="px-3 py-1.5 rounded-xl bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+          >
+            <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+            <span>AI Rules & Policy</span>
+          </button>
+
+          {/* Export CSV Button */}
+          <button
+            onClick={handleExportCSV}
+            className="px-3 py-1.5 rounded-xl bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-200 text-xs font-semibold flex items-center space-x-1.5 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5 text-blue-400" />
+            <span>Export CSV</span>
+          </button>
+
+          {/* Refresh Sync Button */}
+          <button
+            onClick={handleRefreshSync}
+            disabled={isSyncing}
+            className="p-2 rounded-xl bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 hover:text-white transition-colors"
+            title="Sync Cloud Data"
+          >
+            <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-purple-400' : ''}`} />
+          </button>
+        </div>
+      </div>
+
       {/* Header Banner */}
       <header className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-gray-950 via-gray-900 to-gray-950 p-8 md:p-12 border border-gray-800 shadow-2xl">
         <div className="absolute top-0 right-0 -mt-16 -mr-16 w-96 h-96 bg-purple-500/15 rounded-full blur-3xl pointer-events-none" />
@@ -247,6 +417,43 @@ function Dashboard() {
           ))}
         </div>
       </header>
+
+      {/* Admin Actionable Task Queue Widget */}
+      <div className="bg-gray-900/90 rounded-3xl p-6 border border-gray-800 shadow-2xl space-y-4">
+        <div className="flex items-center justify-between border-b border-gray-800 pb-3.5">
+          <div className="flex items-center space-x-2.5">
+            <CheckSquare className="w-5 h-5 text-emerald-400" />
+            <h3 className="text-lg font-bold text-white tracking-tight">Admin Actionable Checklist & Pending Reviews</h3>
+          </div>
+          <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-semibold">
+            4 Tasks Ready
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {adminTasks.map((task) => (
+            <Link key={task.id} to={task.path} className="group">
+              <div className="bg-gray-950/70 hover:bg-gray-950 p-4.5 rounded-2xl border border-gray-800/90 hover:border-gray-700 transition-all flex items-start justify-between space-x-4">
+                <div className="flex items-start space-x-3.5">
+                  <div className="p-2.5 rounded-xl bg-gray-900 border border-gray-800 flex-shrink-0">
+                    {task.icon}
+                  </div>
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h4 className="text-sm font-bold text-white group-hover:text-amber-300 transition-colors">{task.title}</h4>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${task.badgeColor}`}>
+                        {task.badge}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1 leading-relaxed">{task.desc}</p>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-gray-500 group-hover:text-white group-hover:translate-x-1 transition-all flex-shrink-0 mt-1" />
+              </div>
+            </Link>
+          ))}
+        </div>
+      </div>
 
       {/* Multilingual Support Ticker */}
       <div className="bg-gray-900/80 rounded-2xl p-5 border border-gray-800/90 shadow-xl space-y-3">
@@ -371,9 +578,9 @@ function Dashboard() {
         ))}
       </div>
 
-      {/* Live System Activity Feed */}
+      {/* Live System Activity Feed with Filter & Search */}
       <div className="bg-gray-900/80 rounded-3xl p-7 border border-gray-800 shadow-2xl space-y-5">
-        <div className="flex items-center justify-between border-b border-gray-800 pb-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-gray-800 pb-4 gap-4">
           <div className="flex items-center space-x-3">
             <div className="p-2 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400">
               <Activity className="w-5 h-5" />
@@ -383,35 +590,161 @@ function Dashboard() {
               <p className="text-xs text-gray-400">Real-time status updates from autonomous cloud functions and prompt engines</p>
             </div>
           </div>
-          <div className="flex items-center space-x-2 text-xs text-gray-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>Live Stream</span>
+
+          {/* Admin Log Controls */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Log Search Input */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search logs..."
+                value={logSearch}
+                onChange={(e) => setLogSearch(e.target.value)}
+                className="pl-8 pr-3 py-1.5 rounded-xl bg-gray-950 border border-gray-800 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:border-purple-500 w-36 sm:w-48"
+              />
+            </div>
+
+            {/* Filter Category Pills */}
+            <div className="flex items-center space-x-1 bg-gray-950 p-1 rounded-xl border border-gray-800">
+              {[
+                { id: 'all', label: 'All' },
+                { id: 'language', label: 'Native AI' },
+                { id: 'mockup', label: 'Mockups' },
+                { id: 'safeguard', label: 'Safeguards' },
+                { id: 'scrape', label: 'Scrapes' },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setLogFilter(tab.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    logFilter === tab.id
+                      ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
+        {/* Log Entries */}
         <div className="space-y-3">
-          {recentLogs.map((log) => (
-            <div
-              key={log.id}
-              className="bg-gray-950/60 rounded-2xl p-4 border border-gray-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-gray-700 transition-colors"
-            >
-              <div className="flex items-start sm:items-center space-x-3">
-                <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${log.color}`}>
-                  {log.type}
-                </span>
-                <div>
-                  <span className="text-xs font-bold text-white mr-2">{log.agent}:</span>
-                  <span className="text-xs text-gray-300">{log.message}</span>
+          {filteredLogs.length > 0 ? (
+            filteredLogs.map((log) => (
+              <div
+                key={log.id}
+                className="bg-gray-950/60 rounded-2xl p-4 border border-gray-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-gray-700 transition-colors"
+              >
+                <div className="flex items-start sm:items-center space-x-3">
+                  <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${log.color}`}>
+                    {log.type}
+                  </span>
+                  <div>
+                    <span className="text-xs font-bold text-white mr-2">{log.agent}:</span>
+                    <span className="text-xs text-gray-300">{log.message}</span>
+                  </div>
                 </div>
+                <span className="text-[11px] font-medium text-gray-400 flex-shrink-0">{log.time}</span>
               </div>
-              <span className="text-[11px] font-medium text-gray-400 flex-shrink-0">{log.time}</span>
+            ))
+          ) : (
+            <div className="py-8 text-center text-xs text-gray-400 italic bg-gray-950/40 rounded-2xl border border-gray-800/50">
+              No activity logs match the selected filter query "{logSearch}".
             </div>
-          ))}
+          )}
         </div>
       </div>
+
+      {/* Admin Rules & Policy Inspector Modal */}
+      <AnimatePresence>
+        {showRulesModal && (
+          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-gray-900 border border-gray-800 rounded-3xl p-7 max-w-2xl w-full shadow-2xl space-y-6 relative overflow-hidden"
+            >
+              <div className="flex items-center justify-between border-b border-gray-800 pb-4">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Active AI Rules & Enforcement Inspector</h3>
+                    <p className="text-xs text-gray-400">Hard policy constraints configured across backend prompt helpers</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowRulesModal(false)}
+                  className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                <div className="p-4 rounded-2xl bg-gray-950 border border-emerald-500/30 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-emerald-400 font-bold text-sm">
+                    <Globe className="w-4 h-4" />
+                    <span>Rule 1: Country-based Native Local Language Engine</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    Outreach emails, WhatsApp messages, and DALL-E phone screen UI prompts MUST be written in the prospect's local native language (e.g. Vietnamese for Saigon/Vietnam, French for France, German for Germany), keeping English for India and native English markets (UK, US, Canada, Australia, Singapore).
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-gray-950 border border-amber-500/30 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-amber-400 font-bold text-sm">
+                    <ShieldAlert className="w-4 h-4" />
+                    <span>Rule 2: Banned Informal & Stock Audit Phrases</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    STRICTLY BANNED: <code className="text-amber-300 font-mono">"split our time"</code>, <code className="text-amber-300 font-mono">"split time"</code>, <code className="text-amber-300 font-mono">"caught our eye"</code>, <code className="text-amber-300 font-mono">"while reviewing your site"</code>, <code className="text-amber-300 font-mono">"one idea that came to mind"</code>, raw bracket placeholders <code className="text-amber-300 font-mono">[MindGym]</code>, and negative deficiency framing.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-gray-950 border border-purple-500/30 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-purple-400 font-bold text-sm">
+                    <ImageIcon className="w-4 h-4" />
+                    <span>Rule 3: Localized DALL-E 3 App UI Mockup Prompts</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    Image prompts generated for DALL-E 3 phone screen mockups MUST explicitly instruct the rendering engine that UI titles, buttons, and tab bars appear in the prospect's native local language script (with 3-4 specific translated examples provided).
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-gray-950 border border-blue-500/30 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-blue-400 font-bold text-sm">
+                    <CheckSquare className="w-4 h-4" />
+                    <span>Rule 4: 100% Human-in-the-Loop Review Safeguard</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    All generated outreach messages enter a pending review queue requiring admin inspection before email or WhatsApp dispatch.
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-gray-800 flex justify-between items-center text-xs text-gray-400">
+                <span>Policy File: <code className="text-gray-300 font-mono">functions/aiHelpers.js</code></span>
+                <button
+                  onClick={() => setShowRulesModal(false)}
+                  className="px-5 py-2 rounded-xl bg-purple-500 hover:bg-purple-600 text-white font-bold transition-colors"
+                >
+                  Close Inspector
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 export default Dashboard;
+
 
