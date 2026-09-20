@@ -275,6 +275,7 @@ function OutreachAgent() {
   const [loading, setLoading] = useState(true);
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [activeMockupProspect, setActiveMockupProspect] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [expandedId, setExpandedId] = useState(null);
   const [busyId, setBusyId] = useState(null);
@@ -312,6 +313,11 @@ function OutreachAgent() {
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+
+  const currentActiveMockupProspect = useMemo(() => {
+    if (!activeMockupProspect) return null;
+    return prospects.find(x => x.id === activeMockupProspect.id) || activeMockupProspect;
+  }, [activeMockupProspect, prospects]);
 
   const fetchProspects = async () => {
     const res = await fetch(`${API}/prospects`);
@@ -1376,6 +1382,18 @@ function OutreachAgent() {
                       <CheckCircle2 className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      onClick={(e) => { e.stopPropagation(); setActiveMockupProspect(p); }}
+                      title={p.prototypeImageUrl ? "View or edit attached visual prototype mockup" : "Attach a visual prototype mockup for this prospect"}
+                      className={`flex-shrink-0 flex items-center space-x-1 border text-xs font-semibold py-1.5 px-2.5 rounded-lg transition-all ${
+                        p.prototypeImageUrl 
+                          ? 'bg-purple-900/50 hover:bg-purple-800/70 border-purple-600/70 text-purple-200 shadow-sm shadow-purple-900/30' 
+                          : 'bg-gray-800 hover:bg-purple-900/40 border-gray-700 hover:border-purple-700/50 text-gray-300 hover:text-purple-200'
+                      }`}
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-purple-400" />
+                      <span>{p.prototypeImageUrl ? '✓ Mockup' : '+ Mockup'}</span>
+                    </button>
+                    <button
                       onClick={() => toggleQueueExpanded(p.id + kind)}
                       className="flex-shrink-0 whitespace-nowrap text-xs text-gray-400 hover:text-white underline"
                     >
@@ -1505,7 +1523,7 @@ function OutreachAgent() {
                           />
                         </>
                       )}
-                      {kind === 'initial' && body && (
+                      {body && (
                         <div className="bg-gray-900 border border-gray-700 rounded-lg p-2 space-y-2">
                           <div className="text-xs text-gray-400 mb-1.5">Visual prototype (optional — shown in the email if attached)</div>
                           {p.prototypeImageUrl ? (
@@ -1848,6 +1866,123 @@ function OutreachAgent() {
               >
                 Add Prospect
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+        {/* Active Mockup Modal */}
+        {currentActiveMockupProspect && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+            onClick={() => setActiveMockupProspect(null)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-gray-900 border border-purple-900/50 rounded-2xl max-w-xl w-full p-6 space-y-5 shadow-2xl overflow-y-auto max-h-[90vh]"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between border-b border-gray-800 pb-4">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-lg font-bold text-white">{currentActiveMockupProspect.name}</h3>
+                    {currentActiveMockupProspect.prototypeImageUrl && (
+                      <span className="text-[10px] font-bold bg-purple-900/80 text-purple-200 border border-purple-600/60 px-2 py-0.5 rounded-full">
+                        ✓ Mockup Attached
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {currentActiveMockupProspect.notes || currentActiveMockupProspect.category || 'Prospect'} 
+                    {currentActiveMockupProspect.website && (
+                      <> · <a href={currentActiveMockupProspect.website.startsWith('http') ? currentActiveMockupProspect.website : `http://${currentActiveMockupProspect.website}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">{currentActiveMockupProspect.website}</a></>
+                    )}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setActiveMockupProspect(null)}
+                  className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Image Preview or Upload Dropzone */}
+              <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between text-xs font-semibold text-gray-300">
+                  <span>Visual Prototype Mockup</span>
+                  <span className="text-[11px] text-gray-400 font-normal">Shown in personalized emails & pitches</span>
+                </div>
+
+                {currentActiveMockupProspect.prototypeImageUrl ? (
+                  <div className="space-y-3">
+                    <div className="relative group rounded-xl overflow-hidden border border-purple-500/30 max-h-80 flex justify-center bg-black/40 p-2">
+                      <img 
+                        src={currentActiveMockupProspect.prototypeImageUrl} 
+                        alt="Prototype mockup" 
+                        className="object-contain max-h-72 rounded-lg"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between pt-1">
+                      <label className={`flex items-center space-x-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium py-2 px-3 rounded-lg border border-gray-700 cursor-pointer transition-all ${busyId === currentActiveMockupProspect.id + '-prototype' ? 'opacity-50 pointer-events-none' : ''}`}>
+                        {busyId === currentActiveMockupProspect.id + '-prototype' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5 text-purple-400" />}
+                        <span>Replace Image</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={e => handleAttachPrototype(currentActiveMockupProspect, e.target.files[0])}
+                        />
+                      </label>
+                      <button
+                        onClick={() => handleRemovePrototype(currentActiveMockupProspect)}
+                        disabled={busyId === currentActiveMockupProspect.id + '-prototype'}
+                        className="text-xs text-red-400 hover:text-red-300 font-medium hover:underline disabled:opacity-50"
+                      >
+                        Remove Mockup
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <label className={`flex flex-col items-center justify-center border-2 border-dashed border-purple-500/40 hover:border-purple-400 bg-purple-950/10 hover:bg-purple-950/20 rounded-xl p-6 cursor-pointer transition-all group ${busyId === currentActiveMockupProspect.id + '-prototype' ? 'opacity-50 pointer-events-none' : ''}`}>
+                    {busyId === currentActiveMockupProspect.id + '-prototype' ? (
+                      <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-2" />
+                    ) : (
+                      <ImageIcon className="w-8 h-8 text-purple-400 group-hover:scale-110 transition-transform mb-2" />
+                    )}
+                    <span className="text-xs font-semibold text-purple-200">Click or drag & drop image to attach mockup</span>
+                    <span className="text-[11px] text-gray-400 mt-1">Supports PNG, JPG, WEBP (up to 10MB)</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={e => handleAttachPrototype(currentActiveMockupProspect, e.target.files[0])}
+                    />
+                  </label>
+                )}
+              </div>
+
+              {/* DALL-E / Image Prompt Generator */}
+              <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 space-y-2">
+                <div className="text-xs font-semibold text-gray-300 mb-1">AI Mockup Prompt Generator</div>
+                <p className="text-[11px] text-gray-400 leading-normal mb-2">
+                  Generates a tailored prompt for ChatGPT / DALL-E 3 based on this prospect's niche and website.
+                </p>
+                <ImagePromptBox prospectId={currentActiveMockupProspect.id} />
+              </div>
+
+              {/* Footer */}
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={() => setActiveMockupProspect(null)}
+                  className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold px-5 py-2 rounded-xl transition-all shadow-lg shadow-purple-900/30"
+                >
+                  Done
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
