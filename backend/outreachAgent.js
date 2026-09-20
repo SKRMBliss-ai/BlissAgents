@@ -485,7 +485,7 @@ const draftPromoEmail = async (openai, { businessName, businessType, contactPers
 };
 
 const imagePromptPrompt = ({ businessName, businessType, recommendedService, mindGymAppProduct, mindGymAppPotential, research, notes }) => `
-You are helping create a visual mockup prompt for an AI image generator (ChatGPT / DALL-E / Midjourney).
+You are helping create a visual mockup prompt for an AI image generator (ChatGPT / DALL-E 3 / Midjourney).
 
 The mockup is a one-off visual of a digital product idea being pitched to a business via cold email — something like a phone screen showing a branded app, or a website hero section — to help them picture what's being suggested. It will be attached to the email as an optional teaser image.
 
@@ -495,16 +495,18 @@ Suggested idea / recommended service: ${recommendedService || 'digital product o
 ${mindGymAppPotential >= 3 && mindGymAppProduct ? `Custom branded app angle: a version of ${mindGymAppProduct} branded for this business` : ''}
 ${research ? `Research notes (use any relevant details for specificity): ${research}` : ''}
 
-CRITICAL LOCAL LANGUAGE MANDATE FOR THE UI MOCKUP IMAGE PROMPT:
-- Determine the prospect's native local language from their location, city, country, website, or research notes (e.g. Vietnamese for Vietnam/Saigon, French for France, German for Germany, Spanish for Spain, Japanese for Japan, Portuguese for Brazil, etc.).
+CRITICAL LOCAL LANGUAGE & LEGIBILITY MANDATE FOR THE UI MOCKUP IMAGE PROMPT:
+- Determine the prospect's native local language from their location, city, country, website, or research notes (e.g. Vietnamese for Vietnam/Saigon, French for France, German for Germany, Spanish for Spain, Arabic for Middle East/UAE/Saudi, Japanese for Japan, Portuguese for Brazil, etc.).
 - EXCEPTION: For prospects in India or native English-speaking countries (UK, US, Canada, Australia, NZ, Ireland, Singapore), use ENGLISH for all UI text on the screen.
-- FOR ALL OTHER INTERNATIONAL PROSPECTS (e.g. Vietnam, France, Germany, Spain, Japan, etc.): Explicitly instruct the AI image generator that ALL visible text labels, titles, headers, banner headlines, buttons, and bottom navigation tab items ON THE PHONE/DEVICE SCREEN MUST BE WRITTEN IN THE PROSPECT'S LOCAL LANGUAGE!
-- In your prompt text, provide 3-4 specific translated text examples in that local language for the device screen UI (for example, for a Vietnamese Saigon therapy app mockup: specify app title "Phòng Tâm Lý Sài Gòn", main headline "Sức Khỏe Tinh Thần Cho Cuộc Sống Tốt Đẹp Hơn", primary action button "Đặt Lịch Khám Ngay", and bottom tabs "Trang Chủ", "Dịch Vụ", "Lịch Hẹn").
+- FOR ALL OTHER INTERNATIONAL PROSPECTS (e.g. Vietnam, France, Germany, Spain, Saudi Arabia, UAE, Switzerland, Japan, etc.): Explicitly instruct the AI image generator that ALL visible text labels, titles, headers, banner headlines, buttons, and bottom navigation tab items ON THE PHONE/DEVICE SCREEN MUST BE WRITTEN IN THE PROSPECT'S LOCAL LANGUAGE!
+- In your prompt text, provide 3-4 specific, 100% grammatically correct translated text examples in that local language for the device screen UI (for example, for an Arabic cafe app mockup: specify app title "آرت هاوس كافيه", main headline "اطلب الآن عبر التطبيق", primary action button "احجز طاولة الآن", and bottom tabs "الرئيسية", "القائمة", "الحجز").
+- MUST INCLUDE TEXT QUALITY REQUIREMENT: Explicitly instruct in the generated prompt that "All visible UI text labels on the phone screen must be crystal clear, perfectly legible, 100% grammatically correct, accurately spelled in authentic native local copy, and formatted as sharp modern app UI typography (zero gibberish, blurred characters, or floating nonsense symbols)."
 
 Write ONE ready-to-use image generation prompt (2-4 sentences, plain English instructions for DALL-E/Midjourney). The prompt must:
-- Describe a clean, professional phone or device mockup showing a UI screen relevant to this business and idea
-- Name the business in the UI (e.g. "${businessName}" or local language title)
-- Explicitly specify that all screen titles, navigation headers, buttons, and taglines ARE RENDERED IN THE PROSPECT'S LOCAL LANGUAGE (with 3-4 explicit translated text examples)
+- Describe a clean, professional mobile phone mockup showing a high-end UI screen relevant to this business and idea
+- Name the business in the UI (e.g. "${businessName}" or authentic local language title)
+- Explicitly specify that all screen titles, navigation headers, buttons, and taglines ARE RENDERED IN THE PROSPECT'S LOCAL LANGUAGE (with 3-4 explicit translated text examples that look like authentic, real mobile app copy)
+- Include the explicit rule: "Ensure all UI text on the screen is crystal clear, perfectly legible, 100% grammatically correct, accurately spelled, and visually formatted as an authentic, high-end production mobile app interface."
 - Specify a visual style: clean, minimal, warm, modern app UI, soft tones, white or cream background, product photography style
 - NOT describe anything photorealistic with people — just the device/screen mockup itself
 - Be ready to paste directly into ChatGPT or Midjourney with no editing needed
