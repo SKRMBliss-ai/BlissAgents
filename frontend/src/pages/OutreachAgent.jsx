@@ -939,8 +939,25 @@ function OutreachAgent() {
     });
   };
 
+  const handleBulkApprovePending = async () => {
+    const pendingItems = approvalQueue.filter(item => {
+      const stage = computeSendStage(item.p, item.kind);
+      return stage === 'Needs Review';
+    });
+    if (pendingItems.length === 0) {
+      alert('No items in the current view are currently waiting for approval.');
+      return;
+    }
+    if (!confirm(`Approve all ${pendingItems.length} pending draft(s) now for automatic queue dispatch?`)) return;
+    for (const item of pendingItems) {
+      if (item.kind === 'initial') await handleApproveEmail(item.p);
+      else if (item.kind === 'followup') await handleApproveFollowUp(item.p);
+      else if (item.kind === 'promo') await handleApprovePromo(item.p);
+    }
+  };
+
   return (
-    <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
+    <div className="max-w-[1550px] w-full mx-auto space-y-8 animate-in fade-in duration-500">
       <header className="flex justify-between items-center bg-gray-800 p-6 rounded-2xl shadow-xl border border-gray-700">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">
@@ -965,6 +982,32 @@ function OutreachAgent() {
         <StatCard icon={<Mail className="w-5 h-5 text-purple-400" />} value={stats.emailsOpened} label="Emails Opened" />
         <StatCard icon={<CheckCircle2 className="w-5 h-5 text-indigo-400" />} value={stats.queuedForSend} label="Queued to Send" />
       </div>
+
+      {/* 1-Click Batch Approval Banner for Admins */}
+      {tabCounts.pending > 0 && (
+        <div className="bg-gradient-to-r from-emerald-950/90 via-teal-900/50 to-gray-900 rounded-2xl p-4.5 border border-emerald-500/50 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-sm font-extrabold text-white tracking-wide">
+                {tabCounts.pending} Native Language Outreach Drafts Ready for Admin Approval
+              </span>
+              <p className="text-xs text-emerald-300 mt-0.5">
+                Drafts generated in prospect's native local language (VN, FR, DE, ES, JA, etc.) based on country location
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleBulkApprovePending}
+            className="bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-black text-xs py-2.5 px-5 rounded-xl shadow-lg flex items-center space-x-2 transition-all active:scale-95 cursor-pointer"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            <span>1-Click Approve All {tabCounts.pending} Pending Drafts</span>
+          </button>
+        </div>
+      )}
 
       {missingDraftCount > 0 && (
         <div className="bg-gray-800 rounded-2xl p-4 shadow-xl border border-gray-700 flex items-center justify-between flex-wrap gap-3">
@@ -1099,6 +1142,14 @@ function OutreachAgent() {
           </div>
 
           <div className="flex items-center space-x-2">
+            <button
+              onClick={handleBulkApprovePending}
+              className="flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 px-3 rounded-lg shadow transition-all active:scale-95 cursor-pointer"
+              title="Approves all currently pending drafts in 1 click"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Approve All Pending ({tabCounts.pending})</span>
+            </button>
             <button
               onClick={handleRedraftPending}
               disabled={redrafting}
@@ -1284,7 +1335,7 @@ function OutreachAgent() {
                         href={googleSearchLink(p.businessName, p.notes)}
                         target="_blank" rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
-                        className="flex-shrink-0 flex items-center gap-1.5 font-medium text-blue-400 hover:text-blue-300 underline whitespace-nowrap text-sm max-w-[176px] truncate"
+                        className="flex-shrink-0 flex items-center gap-1.5 font-bold text-blue-400 hover:text-blue-300 underline whitespace-nowrap text-sm max-w-[280px] sm:max-w-[480px] truncate"
                         title={p.businessName}
                       >
                         <Search className="w-3.5 h-3.5 flex-shrink-0" />
