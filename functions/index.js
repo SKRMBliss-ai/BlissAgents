@@ -54,6 +54,29 @@ const enrichProspect = async (openai, prospect) => {
       aiHelpers.draftEmail(openai, draftArgs),
       aiHelpers.draftMessage(openai, draftArgs),
     ]);
+    let prototypeImageUrl = prospect.prototypeImageUrl;
+    if (!prototypeImageUrl && prospect.businessName) {
+      try {
+        const crypto = require('crypto');
+        const promptText = `Sleek modern mobile phone mockup showing home screen of a redesigned mobile app interface for ${prospect.businessName}, featuring high-end UI layout, clean modern aesthetic, product photography style on neutral soft cream background, no people, minimal shadows`;
+        const genUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=768&height=1024&nologo=true&model=turbo`;
+        const imgRes = await fetch(genUrl);
+        if (imgRes.ok) {
+          const fileBuffer = Buffer.from(await imgRes.arrayBuffer());
+          const filePath = `prototype-images/${prospect.id || 'new'}-${Date.now()}.jpg`;
+          const bucket = admin.storage().bucket('bliss-agents-outreach.firebasestorage.app');
+          const bucketFile = bucket.file(filePath);
+          const token = crypto.randomUUID();
+          await bucketFile.save(fileBuffer, {
+            metadata: { contentType: 'image/jpeg', metadata: { firebaseStorageDownloadTokens: token } },
+          });
+          prototypeImageUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(filePath)}?alt=media&token=${token}`;
+        }
+      } catch (e) {
+        console.error(`[auto-mockup] Failed to generate mockup for "${prospect.businessName}":`, e.message);
+      }
+    }
+
     return {
       digitalGaps: gaps.digitalGaps, recommendedService: gaps.recommendedService,
       draftEmailSubject: email.subject, draftEmailBody: email.body,
@@ -66,6 +89,7 @@ const enrichProspect = async (openai, prospect) => {
       feelingsCourseAffiliateFit: gaps.feelingsCourseAffiliateFit ?? null,
       feelingsCourseAffiliateReason: gaps.feelingsCourseAffiliateReason || null,
       mindGymAppReason: gaps.mindGymAppReason || null,
+      prototypeImageUrl: prototypeImageUrl || null,
     };
   } catch (error) {
     console.error(`[auto-enrich] Failed for "${prospect.businessName}":`, error.message);
@@ -718,7 +742,14 @@ const sendApprovedBatch = async () => {
     .filter(p => p.promoApproved && p.email)
     .map(p => ({ prospect: p, kind: 'promo', queuedAt: p.promoApprovedAt || '' }));
   const queue = [...initialItems, ...followUpItems, ...promoItems]
-    .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
+    .sort((a, b) => {
+      // 1. Mockup attachments ALWAYS get priority #1 at the top of the queue
+      const hasMockupA = Boolean(a.prospect.prototypeImageUrl);
+      const hasMockupB = Boolean(b.prospect.prototypeImageUrl);
+      if (hasMockupA !== hasMockupB) return hasMockupA ? -1 : 1;
+      // 2. Otherwise sort FCFS by approval timestamp
+      return a.queuedAt.localeCompare(b.queuedAt);
+    })
     .slice(0, batchSize);
 
   let sentCount = 0;
@@ -727,10 +758,7 @@ const sendApprovedBatch = async () => {
       const trackingUrl = `https://bliss-agents-outreach.web.app/api/outreach/track-open/${prospect.id}`;
       const subject = kind === 'initial' ? prospect.draftEmailSubject : kind === 'followup' ? prospect.followUpEmailSubject : prospect.promoEmailSubject;
       const body = kind === 'initial' ? prospect.draftEmailBody : kind === 'followup' ? prospect.followUpEmailBody : prospect.promoEmailBody;
-      // The prototype image, if attached, only makes sense on the first
-      // email — a follow-up/promo re-sending it would be a repeat, not new
-      // information.
-      const prototypeImageUrl = kind === 'initial' ? prospect.prototypeImageUrl : undefined;
+      const prototypeImageUrl = prospect.prototypeImageUrl;
       await emailSender.sendEmail({ to: prospect.email, subject, body, fromName: 'Shruti | SKRM Bliss AI', trackingUrl, prototypeImageUrl });
 
       if (kind === 'initial') {

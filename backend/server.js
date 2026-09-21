@@ -951,7 +951,14 @@ const sendApprovedBatch = async () => {
     .filter(p => p.promoApproved && p.email)
     .map(p => ({ prospect: p, kind: 'promo', queuedAt: p.promoApprovedAt || '' }));
   const queue = [...initialItems, ...followUpItems, ...promoItems]
-    .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
+    .sort((a, b) => {
+      // 1. Mockup attachments ALWAYS get priority #1 at the top of the queue
+      const hasMockupA = Boolean(a.prospect.prototypeImageUrl);
+      const hasMockupB = Boolean(b.prospect.prototypeImageUrl);
+      if (hasMockupA !== hasMockupB) return hasMockupA ? -1 : 1;
+      // 2. Otherwise sort FCFS by approval timestamp
+      return a.queuedAt.localeCompare(b.queuedAt);
+    })
     .slice(0, batchSize);
 
   let sentCount = 0;
