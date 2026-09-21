@@ -58,7 +58,7 @@ const enrichProspect = async (openai, prospect) => {
     if (!prototypeImageUrl && prospect.businessName) {
       try {
         const crypto = require('crypto');
-        const promptText = `Sleek modern mobile phone mockup showing home screen of a redesigned mobile app interface for ${prospect.businessName}, featuring high-end UI layout, clean modern aesthetic, product photography style on neutral soft cream background, no people, minimal shadows`;
+        const promptText = `A vibrant, ultra-high quality mobile phone mockup displaying a colorful, modern app home screen interface for ${prospect.businessName}, with rich UI cards, colorful action buttons, styled navigation icons, bold headers, product photography shot on soft cream studio backdrop with subtle shadow, no people`;
         const genUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=768&height=1024&nologo=true&model=turbo`;
         const imgRes = await fetch(genUrl);
         if (imgRes.ok) {
